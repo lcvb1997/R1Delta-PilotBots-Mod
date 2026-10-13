@@ -497,19 +497,32 @@ function UpdateMappedConVarFromPlaylist( conVarName, useBase = false  )
 }
 
 
-// Pilot bots: the count is stored as is, the lethality as its pmSettingsMap index (the playlist
-// holds the bot skill level; normal when not set).
+// Pilot bots: the count is stored as is, the lethality as its menu index (the playlist holds the bot
+// skill level; normal when not set).
+// Everything the bot settings need is in this file and in autorun/sv_pilotbots_settings.nut (the lobby
+// side), not in _consts.nut or menu/_lobby.nut: mods that ship their own copy of those files would
+// otherwise drop the bot entries and break the whole match settings menu.
+const PILOTBOTS_PM_COUNT_MAX = 10
+const PILOTBOTS_PM_COUNT_DEFAULT = 10	// private matches without the setting applied
+
 function UpdateBotConVarsFromPlaylist( useBase = false )
 {
-	local count = useBase ? GetCurrentPlaylistVarOrUseValueOriginal( "bot_count", "" + PM_BOT_COUNT_DEFAULT ) : GetCurrentPlaylistVarOrUseValue( "bot_count", "" + PM_BOT_COUNT_DEFAULT )
-	count = clamp( count.tointeger(), 0, PM_BOT_COUNT_MAX )
+	local count = useBase ? GetCurrentPlaylistVarOrUseValueOriginal( "bot_count", "" + PILOTBOTS_PM_COUNT_DEFAULT ) : GetCurrentPlaylistVarOrUseValue( "bot_count", "" + PILOTBOTS_PM_COUNT_DEFAULT )
+	count = clamp( count.tointeger(), 0, PILOTBOTS_PM_COUNT_MAX )
 	ClientCommand( "pm_bot_count " + count )
 	file.pmVarValues["pm_bot_count"] <- count.tofloat()
 
 	local skill = useBase ? GetCurrentPlaylistVarOrUseValueOriginal( "bot_lethality", "1" ) : GetCurrentPlaylistVarOrUseValue( "bot_lethality", "1" )
 	skill = skill.tointeger()
+	// menu index -> bot skill level; must match sv_pilotbots_settings.nut
+	local skills = [
+		1, // default: normal
+		0, // low
+		2, // high
+		3, // very high
+	]
 	local pmSetting = 0
-	foreach ( index, value in pmSettingsMap["pm_bot_lethality"] )
+	foreach ( index, value in skills )
 	{
 		if ( value == skill )
 		{
@@ -519,6 +532,15 @@ function UpdateBotConVarsFromPlaylist( useBase = false )
 	}
 	ClientCommand( "pm_bot_lethality " + pmSetting )
 	file.pmVarValues["pm_bot_lethality"] <- pmSetting.tofloat()
+}
+
+// Same as UpdatePlaylistFromConVar, but through PilotBotsSetting (autorun/sv_pilotbots_settings.nut)
+// instead of the lobby's UpdatePrivateMatchSetting.
+function UpdateBotPlaylistFromConVar( conVarName )
+{
+	local conVarValue = GetConVarString( conVarName )
+	ClientCommand( "PilotBotsSetting " + conVarName + " " + conVarValue )
+	file.pmVarValues[conVarName] <- conVarValue.tofloat()
 }
 
 
@@ -752,8 +774,8 @@ function ApplyMatchSettings( button )
 	UpdatePlaylistFromConVar( "pm_ai_lethality" )
 	UpdatePlaylistFromConVar( "pm_burn_cards" )
 	UpdatePlaylistFromConVar( "riff_floorislava")
-	UpdatePlaylistFromConVar( "pm_bot_count" )
-	UpdatePlaylistFromConVar( "pm_bot_lethality" )
+	UpdateBotPlaylistFromConVar( "pm_bot_count" )
+	UpdateBotPlaylistFromConVar( "pm_bot_lethality" )
 
 	uiGlobal.matchSettingsChanged = false
 }

@@ -26,7 +26,7 @@
 #include <vector>
 #include "MinHook.h"
 
-#define PILOTBOTS_VERSION "2.0.0"
+#define PILOTBOTS_VERSION "2.1.0"
 
 //=============================================================================
 // Log: pilotbots.log next to this DLL (r1delta\bin_delta). The launcher starts the game with the
@@ -90,6 +90,7 @@ static const uintptr_t kSqPushFloat = 0xE9B0;
 static const uintptr_t kSqNewArray = 0x14FB0;
 static const uintptr_t kSqArrayAppend = 0x152A0;
 static const uintptr_t kSqThrowError = 0x18930;
+static const uintptr_t kServerPrint = 0xB640;		// server VM print function (R1Delta replaces it)
 
 // server.dll
 static const uintptr_t kGpGlobals = 0xC310C0;		// CServerGameDLL::DLLInit stores pGlobals here
@@ -118,6 +119,7 @@ static const unsigned char kSigClientFullyConnected[] = { 0x40, 0x53, 0x48, 0x83
 static const unsigned char kSigCLCopyExistingEntity[] = { 0x40, 0x53, 0x55, 0x57, 0x41, 0x55, 0x41, 0x56, 0x48, 0x83, 0xEC, 0x70 };
 static const unsigned char kSigHostError[] = { 0x48, 0x89, 0x4C, 0x24, 0x08, 0x48, 0x89, 0x54, 0x24, 0x10 };
 static const unsigned char kSigConVarCtor[] = { 0x48, 0x89, 0x5C, 0x24, 0x08, 0x48, 0x89, 0x6C, 0x24, 0x10 };
+static const unsigned char kSigServerPrint[] = { 0x48, 0x8B, 0xC4, 0x48, 0x89, 0x50, 0x10, 0x4C, 0x89, 0x40, 0x18 };
 
 #define SIG_OK(base, off, sig) Matches((base) + (off), sig, sizeof(sig))
 #define SIG_OR_JMP(base, off, sig) (SIG_OK(base, off, sig) || IsJmp((base) + (off)))
@@ -716,6 +718,16 @@ static SQInteger Script_PilotBotsPing(HSQUIRRELVM v)
 	return 1;
 }
 
+// Script-side progress and errors go to pilotbots.log too, since the game writes no console log.
+static SQInteger Script_PilotBotsLog(HSQUIRRELVM v)
+{
+	const char* text = nullptr;
+	if (SQ_FAILED(sq_getstring(v, 2, &text)) || !text)
+		return sq_throwerror(v, "text must be a string");
+	Log("script: %s", text);
+	return 0;
+}
+
 static SQInteger Script_BotSetInput(HSQUIRRELVM v)
 {
 	BotInput* input = GetBotInputArg(v);
@@ -868,6 +880,7 @@ static SQFuncReg MakeReg(const char* name, SQFUNCTION fn, const char* typeMask, 
 // AddSquirrelReg keeps the pointer, so the registrations live for the whole process.
 static SQFuncReg g_serverRegs[] = {
 	MakeReg("PilotBotsPing", Script_PilotBotsPing, ".", 1, "string", "", "pilotbots.dll status"),
+	MakeReg("PilotBotsLog", Script_PilotBotsLog, ".s", 2, "void", "string text", "Append a line to pilotbots.log"),
 	MakeReg("BotSetInput", Script_BotSetInput, ".Iffffi", 7, "void",
 		"entity bot, float forward, float side, float pitch, float yaw, int buttons",
 		"Set the movement, view angles and held buttons written into a bot's usercmds."),
@@ -956,6 +969,38 @@ static bool HookOne(const char* name, uintptr_t target, void* detour, void** ori
 	return s == MH_OK;
 }
 
+// Server script errors ("SCRIPT ERROR: ..." + "CALLSTACK" + frames) only reach the console and
+// R1Delta's telemetry; the game writes no console log. Copy them to pilotbots.log. Hooked on top
+// of R1Delta's replacement of the VM print function (installed late, see InstallLateHooks).
+typedef void (*ServerPrint_t)(void*, const char*, ...);
+static ServerPrint_t g_serverPrintOriginal;
+static int s_errorLinesLeft;
+static int s_errorBudget = 400;	// lines per session, in case something errors every frame
+
+static void Hook_ServerPrint(void* vm, const char* fmt, ...)
+{
+	char text[2048];
+	va_list ap;
+	va_start(ap, fmt);
+	vsnprintf(text, sizeof(text), fmt ? fmt : "", ap);
+	va_end(ap);
+
+	if (strstr(text, "SCRIPT ERROR"))
+		s_errorLinesLeft = 24;
+	if (s_errorLinesLeft > 0 && s_errorBudget > 0) {
+		s_errorLinesLeft--;
+		s_errorBudget--;
+		size_t len = strlen(text);
+		while (len && (text[len - 1] == '\n' || text[len - 1] == '\r'))
+			text[--len] = '\0';
+		if (len)
+			Log("server: %s", text);
+		text[len] = '\n';	// restore for the original print
+		text[len + 1 < sizeof(text) ? len + 1 : len] = '\0';
+	}
+	g_serverPrintOriginal(vm, "%s", text);
+}
+
 // server.dll/engine.dll hooks, installed after R1Delta's own (R1Delta hooks server.dll when it
 // loads; the first script VM is created later). PlayerMoveRunCommand waits for R1Delta's JMP so
 // R1Delta's prologue check still passes; once the server VM exists R1Delta had its chance.
@@ -985,6 +1030,8 @@ static void InstallLateHooks(bool serverVM)
 		HookOne("CL_CopyExistingEntity", g_engine + kCLCopyExistingEntity, reinterpret_cast<void*>(&Hook_CL_CopyExistingEntity), reinterpret_cast<void**>(&g_clCopyOriginal));
 	else
 		Log("engine.dll bytes do not match; CL_CopyExistingEntity guard NOT installed");
+	if (SIG_OR_JMP(g_launcher, kServerPrint, kSigServerPrint))
+		HookOne("server script print", g_launcher + kServerPrint, reinterpret_cast<void*>(&Hook_ServerPrint), reinterpret_cast<void**>(&g_serverPrintOriginal));
 	s_lateHooksOk = ok;
 }
 
@@ -999,10 +1046,36 @@ static bool AddressInModule(uintptr_t addr, const char* module)
 	return addr >= base && addr < base + nt->OptionalHeader.SizeOfImage;
 }
 
+// Our menu strings live in resource/pilotbots_<language>.txt rather than in R1Delta's
+// delta_<language>.txt, which other mods ship their own copy of (an addon's copy wins and drops
+// ours). Added on every UI VM, before its menus load; adding the same file again just refreshes it.
+static void LoadLocalization()
+{
+	HMODULE localize = GetModuleHandleA("localize.dll");
+	if (!localize)
+		return;
+	typedef void* (*CreateInterfaceFn)(const char*, int*);
+	auto createInterface = reinterpret_cast<CreateInterfaceFn>(GetProcAddress(localize, "CreateInterface"));
+	void* iface = createInterface ? createInterface("Localize_001", nullptr) : nullptr;
+	if (!iface)
+		return;
+	// ILocalize::AddFile (vtable slot 8, the call R1Delta uses for delta_%language%.txt)
+	typedef bool (__fastcall* AddFile_t)(void*, const char*, const char*, bool);
+	auto addFile = (*reinterpret_cast<AddFile_t**>(iface))[8];
+	const bool ok = addFile(iface, "resource/pilotbots_%language%.txt", "GAME", false);
+	static bool logged;
+	if (!logged) {
+		logged = true;
+		Log("localization resource/pilotbots_%%language%%.txt: %s", ok ? "ok" : "NOT FOUND");
+	}
+}
+
 static void* Hook_CreateNewVM(__int64 a1, int a2, unsigned int context)
 {
 	void* vm = g_createNewVMOriginal(a1, a2, context);
 	InstallLateHooks(context == 0);
+	if (vm && context == 2)	// 2 = UI VM
+		LoadLocalization();
 	if (!vm || context != 0)	// 0 = server VM
 		return vm;
 

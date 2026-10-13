@@ -5,7 +5,7 @@
 ; Faz backup dos arquivos originais (inclusive a tier0.dll) e restaura tudo ao desinstalar.
 
 #define AppName "Pilot Bots para R1Delta"
-#define AppVer "2.0.0"
+#define AppVer "2.1.0"
 
 [Setup]
 AppId={{6B0C0E55-4F55-4C57-9D55-7B1C5B07B075}
@@ -91,6 +91,10 @@ Source: "payload\POMotorNativoBots\*"; DestDir: "{app}\payload\bin_delta"; Flags
 Source: "payload\POScriptsIABots\*"; DestDir: "{app}\payload\scripts\vscripts"; Flags: recursesubdirs createallsubdirs ignoreversion
 Source: "payload\POMenuETextos\*"; DestDir: "{app}\payload\resource"; Flags: recursesubdirs createallsubdirs ignoreversion
 Source: "ferramentas\pbinject.exe"; DestDir: "{app}"; Flags: ignoreversion
+
+[InstallDelete]
+; payload de uma versao anterior: arquivos que sairam da mod nao podem ser copiados de novo
+Type: filesandordirs; Name: "{app}\payload"
 
 [UninstallDelete]
 Type: filesandordirs; Name: "{app}\backup"
@@ -338,8 +342,21 @@ begin
   begin
     Src := ExpandConstant('{app}\payload\') + Files[I];
     Dst := AddBackslash(Target) + 'r1delta\' + Files[I];
-    if FileExists(Src) and not CopyOver(Src, Dst) then
-      Exit;
+    Bak := BackupBase + Files[I];
+    if FileExists(Src) then
+    begin
+      if not CopyOver(Src, Dst) then
+        Exit;
+    end
+    else if CompareText(Files[I], Tier0) <> 0 then
+    begin
+      { Arquivo de uma versao anterior da mod que esta versao nao usa mais (ex.: _consts.nut e
+        delta_*.txt da 2.0.0): volta o original, ou some se nao existia antes da mod. }
+      if FileExists(Bak) then
+        CopyOver(Bak, Dst)
+      else if FileExists(Bak + '.pbnew') then
+        DeleteFile(Dst);
+    end;
   end;
 
   { pbinject deixa como esta uma tier0.dll que ja tem a importacao (e retorna 0). }

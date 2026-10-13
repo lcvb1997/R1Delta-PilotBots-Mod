@@ -1,6 +1,6 @@
 //=========================================================
 // Pilot bot brain
-// Drives managed bots (see _bot_manager.nut) through the native BotSetInput/BotPressButtons
+// Drives managed bots (see _pilotbots_manager.nut) through the native BotSetInput/BotPressButtons
 // usercmd injection and NavFindPath node-graph pathfinding provided by R1Delta.
 //=========================================================
 
@@ -532,6 +532,13 @@ const BOT_EMBARK_MAX_DIST		= 4000.0
 
 // Out-of-world watchdog: how far outside the area the node graph covers a bot may be before it
 // is put back (see UpdateBoundsWatchdog).
+const BOT_INTRO_FLAG_MAX		= 15.0	// campaign ground intro: once the match is on, stay with the intro at most this long...
+const BOT_INTRO_SETTLE_MIN		= 3.0	// ...then still standing this long more (see UpdateCinematicHold)...
+const BOT_INTRO_SETTLE_MAX		= 6.0
+const BOT_INTRO_LOOK_RANGE		= 70.0	// ...looking around up to this far from where we face...
+const BOT_INTRO_LOOK_TIME_MIN	= 1.5	// ...a new direction every so often...
+const BOT_INTRO_LOOK_TIME_MAX	= 4.0
+const BOT_INTRO_TURN_STEP		= 4.0	// ...turned to at most this much per think
 const BOT_BOUNDS_CHECK_INTERVAL	= 2.0
 const BOT_BOUNDS_MARGIN_XY		= 2500.0
 const BOT_BOUNDS_BELOW			= 1000.0
@@ -550,6 +557,26 @@ const BOT_NPC_GROUP_RADIUS		= 350
 // Abilities and ordnance
 const BOT_TACTICAL_RETRY_MIN	= 4.0	// pressing an uncharged ability does nothing; just retry later
 const BOT_TACTICAL_RETRY_MAX	= 8.0
+
+// Frontier Overhaul gear (an addon, absent from the base game). Everything below is keyed on these
+// weapon classes, so none of it does anything unless a bot actually carries one.
+const BOT_FO_KNIFE				= "mp_weapon_mega5"	// Throwing Knife (ordnance): one-shot on anything human-sized
+const BOT_FO_COVER				= "mp_weapon_mega6"	// Deployable Cover (tactical): a bullet-proof dome around where it sticks
+const BOT_FO_HOLOGRAM			= "mp_weapon_mega7"	// Hologram (tactical): a fake pilot runs off the way we face, we cloak
+const BOT_FO_MINIGUN			= "mp_weapon_mega3"	// AG-8 Thunderbolt (titan): spins up, overheats when the clip runs dry
+const BOT_KNIFE_MAX_DIST		= 600.0	// the knife flies straight, but only this far is a sure hit
+const BOT_COVER_ARM_TIME		= 1.0	// the dome comes up this long after the cover sticks (PROXIMITY_MINE_ARMING_DELAY)...
+const BOT_COVER_FIND_TIME		= 3.0	// ...no dome of ours this long after the throw: it didn't go out
+const BOT_COVER_HOLD_MAX		= 10.0	// arming + the dome's 8 seconds
+const BOT_COVER_DOME_RADIUS		= 230.0	// the dome (MINION_BUBBLE_SHIELD_RADIUS in Frontier Overhaul)
+const BOT_COVER_STAY_RADIUS		= 110.0	// stay this close to the dome's center (its radius is 230)
+const BOT_COVER_STRAFE			= 70.0	// side-steps inside it, so we're not a still target
+const BOT_COVER_COOLDOWN		= 20.0	// after a dome went up (it recharges in 25 s, 16.7 with Power Cell)
+const BOT_COVER_RETRY			= 10.0	// after a toss that brought no dome up (pressed while still recharging)
+const BOT_HOLOGRAM_ENGAGE_CHANCE	= 35	// percent of new fights opened with a decoy sent at the enemy
+const BOT_MINIGUN_STOP_FRAC		= 0.12	// let go before the clip runs dry (empty = overheated until fully regenerated)...
+const BOT_MINIGUN_RESUME_FRAC	= 0.6	// ...and spin up again once it has regenerated this far
+const BOT_MINIGUN_KEEP_ANGLE	= 3.0	// once spinning, keep holding while within this many times the trigger angle
 const BOT_ORDNANCE_COOLDOWN_MIN	= 3.0	// between throws (the grenade's own recharge still applies)
 const BOT_ORDNANCE_COOLDOWN_MAX	= 6.0
 const BOT_ORDNANCE_NOT_READY	= 1.0	// no charge left: check again this soon
@@ -1077,6 +1104,8 @@ function main()
 		mp_weapon_grenade_emp = { minDist = 200.0, maxDist = 1500.0, lift = 0.008, liftMax = 12.0, drop = false }
 		mp_weapon_satchel = { minDist = 150.0, maxDist = 500.0, lift = 0.04, liftMax = 30.0, drop = true }
 		mp_weapon_proximity_mine = { minDist = 100.0, maxDist = 450.0, lift = 0.04, liftMax = 30.0, drop = true }
+		// Frontier Overhaul's throwing knife: thrown flat and fast, aimed straight at the body, close up only.
+		mp_weapon_mega5 = { minDist = 0.0, maxDist = BOT_KNIFE_MAX_DIST, lift = 0.0, liftMax = 0.0, drop = false, straight = true }
 	}
 	file.ordnanceMissReported <- {}	// titan ordnance class -> true once a held press was seen not firing
 	// Titan main weapons: the range band each one does its damage in. A titan fights from inside its
@@ -1090,6 +1119,7 @@ function main()
 		mp_titanweapon_rocket_launcher = { min = 500.0, max = 850.0 }
 		mp_titanweapon_xo16 = { min = 550.0, max = 1000.0 }
 		mp_titanweapon_minigun = { min = 550.0, max = 1000.0 }
+		mp_weapon_mega3 = { min = 450.0, max = 900.0 }
 		mp_titanweapon_40mm = { min = 650.0, max = 1100.0 }
 		mp_titanweapon_sniper = { min = 1200.0, max = 2000.0 }
 		mp_titanweapon_charge_cannon = { min = 1100.0, max = 1800.0 }
@@ -1541,6 +1571,10 @@ function BotThink( bot )
 		ordnanceLockWaitSince = 0.0	// Slaved Warheads ready with a target but no lock since (0 = not waiting)
 		lobProfile = null		// ordnance profile of the grenade in lobPos (see GetOrdnanceProfile)
 		lobDrop = false			// the grenade in lobPos is dropped at our feet while running (look down, keep facing)
+		lobTarget = null		// a straight throw (the knife) follows this target instead of lobPos
+		dome = null				// our Deployable Cover dome we're holding in: { pos, start, until, sphere } (see GetCoverHoldMove)
+		hologramRollTarget = null	// target the open-with-a-decoy roll was made for (once per target)
+		spinCooling = false		// minigun let go short of overheating, waiting for the clip to regenerate
 		nextRodeoSmokeTime = 0.0
 		fleeingNuke = false
 		tacticalClip = -1		// titan tactical charges seen last tick (a drop = it was just used)
@@ -1629,6 +1663,10 @@ function BotThink( bot )
 		engaged = false			// fighting last tick (see the engage hysteresis in BotThinkTick)
 		sidearmSwapTime = -999.0	// last time the dry primary was swapped for the sidearm
 		dbgInput = null			// last input sent by BotThinkTick (spawn-death diagnostic)
+		introPlayingStart = 0.0	// campaign ground intro: when we first thought with the match on...
+		introHoldUntil = 0.0	// ...and still standing until then (see UpdateCinematicHold)
+		introLookYaw = null		// ...looking around meanwhile: towards this yaw...
+		introNextLook = 0.0		// ...a new one then
 	}
 
 	// Shared so teammates can see who's hunting whom and which way they're going.
@@ -1664,6 +1702,15 @@ function BotThink( bot )
 
 function BotThinkTick( bot, brain )
 {
+	// Campaign intros: riding a scripted drop pod / dropship, or standing through the briefing.
+	// Before anything else: a ride starts far out of the map (Demeter's pods in orbit), which the
+	// bounds watchdog and the stuck checks below would take for a broken bot and kill.
+	local holding = false
+	try { holding = UpdateCinematicHold( bot, brain ) }
+	catch ( e ) { BotReportError( bot, "UpdateCinematicHold", e ) }
+	if ( holding )
+		return
+
 	try { UpdateBoundsWatchdog( bot, brain ) }
 	catch ( e ) { BotReportError( bot, "UpdateBoundsWatchdog", e ) }
 
@@ -2162,6 +2209,32 @@ function BotThinkTick( bot, brain )
 		}
 	}
 
+	// Our Deployable Cover dome is up (or about to be): stay inside it and fight from there. Wins over
+	// the fight movement and the route; the aim below is left alone.
+	local coverHolding = false
+	if ( !isTitan && brain.dome != null )
+	{
+		local coverMove = null
+		try { coverMove = GetCoverHoldMove( bot, brain ) }
+		catch ( e ) { BotReportError( bot, "CoverHoldMove", e ); brain.dome = null }
+		if ( coverMove != null )
+		{
+			coverHolding = true
+			if ( Length2D( coverMove ) < 1.0 )
+			{
+				forward = 0.0
+				side = 0.0
+			}
+			else
+			{
+				local relative = MoveDirRelativeToView( coverMove, brain.yaw )
+				local scale = min( Length2D( coverMove ) / 60.0, 1.0 )	// ease in on the spot
+				forward = relative.forward * scale
+				side = relative.side * scale
+			}
+		}
+	}
+
 	// Target just ducked out of sight: some bots keep firing at where it was for a moment
 	// (never with the anti-titan weapon: its few rounds are for the titan itself).
 	local suppressing = !hasVisibleTarget && !brain.fleeing && brain.target != null && IsValid( brain.target )
@@ -2208,6 +2281,8 @@ function BotThinkTick( bot, brain )
 	{
 		if ( brain.lobDrop )
 			AimTowards( brain, brain.yaw, BOT_ORDNANCE_DROP_PITCH )
+		else if ( brain.lobTarget != null && IsValid( brain.lobTarget ) && IsAlive( brain.lobTarget ) )
+			AimAt( brain, bot.EyePosition(), brain.lobTarget.GetWorldSpaceCenter(), true )	// knife: on the body as it moves
 		else
 			AimLob( bot, brain, brain.lobPos, brain.lobProfile )
 	}
@@ -2249,7 +2324,11 @@ function BotThinkTick( bot, brain )
 
 	try
 	{
-		if ( !isTitan && inEngageRange )
+		if ( coverHolding )
+		{
+			// Inside our dome: no combat jumps or parkour (they'd carry us out of it).
+		}
+		else if ( !isTitan && inEngageRange )
 			pressed = pressed | UpdateCombatJumps( bot, brain )
 		else if ( !isTitan && wallrunning )
 		{
@@ -2441,6 +2520,8 @@ function BotReportError( bot, where, e )
 
 	local text = "BotAI error in " + where + ": " + e
 	printt( text, "(bot:", IsValid( bot ) ? bot.GetPlayerName() : "?", ")" )
+	if ( "PilotBotsLog" in getroottable() )
+		PilotBotsLog( text )
 	foreach ( player in GetPlayerArray() )
 	{
 		if ( !player.IsBot() )
@@ -3049,7 +3130,8 @@ function UpdateRodeoDefense( bot, brain )
 		brain.rodeoReaction = RandomFloat( BOT_RODEO_REACTION_MIN, BOT_RODEO_REACTION_MAX ) * brain.lethality.titan.rodeoReactionScale
 			+ ( hasSmoke ? BOT_RODEO_SMOKE_GRACE : 0.0 )
 		brain.nextRodeoSmokeTime = now + RandomFloat( 0.2, 0.5 )
-		printt( "BotAI:", bot.GetPlayerName(), "is being rodeoed by", rider.GetPlayerName() )
+		// The rider can be an NPC (spectre rodeos in Frontier Overhaul), which has no player name.
+		printt( "BotAI:", bot.GetPlayerName(), "is being rodeoed by", BotAI_DbgEnt( rider ) )
 	}
 
 	if ( hasSmoke && now > brain.nextRodeoSmokeTime )
@@ -4933,6 +5015,75 @@ function FindEmbarkTitan( bot )
 // out of the map, thrown past the sky limit, a bad position) is a bot the engine has to keep
 // networking at coordinates it was never meant to encode; every player that observes it then
 // receives that entity state. Such a bot is killed (so it respawns) and the console says so.
+// Campaign intros (see _cinematic.nut). True while the bot must do nothing this tick:
+// - In a cinematic slot (drop pod, dropship ride) or a scripted ride (SpawnPlayerIntoRide): the
+//   animation carries it and lets go on landing.
+// - On the ground for the briefing (Barker on Angel City, Airbase): stand and look around like the
+//   humans next to us, through the prematch and while the intro flag lasts (at most BOT_INTRO_FLAG_MAX into the match), then a few seconds more, or until
+//   someone shoots us.
+function UpdateCinematicHold( bot, brain )
+{
+	if ( !GetCinematicMode() )
+		return false
+
+	local state = GetGameState()
+	local flagged = ( bot.GetCinematicEventFlags() & CE_FLAG_INTRO ) != 0
+	// (A rodeo parents us too, but never with the intro flag.)
+	local riding = ( "cinematicSlot" in bot.s && bot.s.cinematicSlot != null ) || ( flagged && bot.GetParent() != null )
+	if ( riding )
+	{
+		local angles = bot.EyeAngles()
+		brain.pitch = angles.x
+		brain.yaw = angles.y
+		BotSetInput( bot, 0.0, 0.0, brain.pitch.tofloat(), brain.yaw.tofloat(), 0 )
+		return true
+	}
+
+	if ( !flagged && state > eGameState.Prematch )
+		return false
+	local now = Time()
+	if ( now - brain.lastAttackerTime < 3.0 )
+		return false
+	if ( state > eGameState.Playing )
+		return false
+	if ( state == eGameState.Playing )
+	{
+		// Still in the intro (Barker talking on Angel City): stay with it, up to a point. Then a few
+		// more seconds looking around before heading out.
+		if ( brain.introPlayingStart == 0.0 )
+			brain.introPlayingStart = now
+		if ( brain.introHoldUntil == 0.0 && ( !flagged || now - brain.introPlayingStart > BOT_INTRO_FLAG_MAX ) )
+			brain.introHoldUntil = now + RandomFloat( BOT_INTRO_SETTLE_MIN, BOT_INTRO_SETTLE_MAX )
+		if ( brain.introHoldUntil != 0.0 && now > brain.introHoldUntil )
+			return false
+	}
+
+	// The intro hides the weapon (DisableWeaponViewModel, meant for a human's own screen); a bot has no
+	// screen, and without it everyone saw it standing in the aiming pose with empty hands. Gun in hand.
+	if ( !( "introWeaponShown" in brain ) )
+	{
+		brain.introWeaponShown <- true
+		bot.EnableWeaponViewModel()
+		local active = bot.GetActiveWeapon()
+		if ( active == null )
+			bot.DeployWeapon()
+		if ( "PilotBots_Log" in getroottable() )
+			PilotBots_Log( "intro hold: " + bot.GetPlayerName() + " weapon " + ( active ? active.GetClassname() : "none" ) + ", " + bot.GetMainWeapons().len() + " main weapons" )
+	}
+
+	// Looking around: a new direction every few seconds, turned to at a calm pace.
+	if ( brain.introLookYaw == null || now > brain.introNextLook )
+	{
+		brain.introLookYaw = NormalizeYaw( brain.yaw + RandomFloat( -BOT_INTRO_LOOK_RANGE, BOT_INTRO_LOOK_RANGE ) )
+		brain.introNextLook = now + RandomFloat( BOT_INTRO_LOOK_TIME_MIN, BOT_INTRO_LOOK_TIME_MAX )
+	}
+	local turn = NormalizeYaw( brain.introLookYaw - brain.yaw )
+	brain.yaw = NormalizeYaw( brain.yaw + BotClamp( turn, -BOT_INTRO_TURN_STEP, BOT_INTRO_TURN_STEP ) )
+	brain.pitch = brain.pitch * 0.8
+	BotSetInput( bot, 0.0, 0.0, brain.pitch.tofloat(), brain.yaw.tofloat(), 0 )
+	return true
+}
+
 function UpdateBoundsWatchdog( bot, brain )
 {
 	local now = Time()
@@ -10560,6 +10711,9 @@ function UpdateFiring( bot, brain, canShoot )
 	if ( fireMode == "smart" )
 		return UpdateSmartPistolFiring( brain, weapon, angleOff, onTarget, now )
 
+	if ( fireMode == "spin" )
+		return UpdateMinigunFiring( brain, weapon, angleOff, maxAngle, now )
+
 	if ( !onTarget )
 	{
 		brain.firing = false
@@ -10619,6 +10773,44 @@ function UpdateFiring( bot, brain, canShoot )
 		brain.triggerPulse = !brain.triggerPulse
 		return brain.triggerPulse ? BOT_IN_ATTACK : 0
 	}
+	return BOT_IN_ATTACK
+}
+
+// Frontier Overhaul's AG-8 minigun: it spins up before it fires, so short bursts would mostly be spin-up.
+// Held down while roughly on target, let go just short of an empty clip (empty = overheated until it
+// has all regenerated) and only spun up again once it has mostly regenerated.
+function UpdateMinigunFiring( brain, weapon, angleOff, maxAngle, now )
+{
+	local size = max( GetWeaponClipSize( weapon ), 1 )
+	local clip = weapon.GetWeaponPrimaryClipCount()
+	if ( brain.spinCooling )
+	{
+		if ( clip < size * BOT_MINIGUN_RESUME_FRAC )
+		{
+			brain.firing = false
+			return 0
+		}
+		brain.spinCooling = false
+	}
+	if ( brain.firing )
+	{
+		if ( clip <= size * BOT_MINIGUN_STOP_FRAC )
+		{
+			brain.firing = false
+			brain.spinCooling = true
+			return 0
+		}
+		if ( angleOff > maxAngle * BOT_MINIGUN_KEEP_ANGLE )
+		{
+			brain.firing = false
+			brain.nextFireToggle = now + 0.2
+			return 0
+		}
+		return BOT_IN_ATTACK
+	}
+	if ( angleOff > maxAngle || now < brain.nextFireToggle )
+		return 0
+	brain.firing = true
 	return BOT_IN_ATTACK
 }
 
@@ -11202,6 +11394,8 @@ function GetWeaponFireMode( weapon )
 		return "charge"
 	if ( weaponClass == "mp_weapon_smart_pistol" )
 		return "smart"
+	if ( weaponClass == BOT_FO_MINIGUN )
+		return "spin"
 	return null
 }
 
@@ -11269,6 +11463,16 @@ function UpdateAbilities( bot, brain, isTitan, hasVisibleTarget )
 			local isVortex = IsValid( tactical ) && tactical.GetWeaponClassName() == "mp_titanweapon_vortex_shield"
 			useTactical = !isVortex && hasVisibleTarget && healthFrac < brain.lethality.titan.tacticalHealth
 		}
+		else if ( GetBotTacticalClass( bot ) == BOT_FO_COVER )
+		{
+			useTactical = WantsDeployableCover( bot, brain, hasVisibleTarget )
+			if ( useTactical )
+				StartCoverThrow( bot, brain )
+		}
+		else if ( GetBotTacticalClass( bot ) == BOT_FO_HOLOGRAM )
+		{
+			useTactical = WantsHologram( bot, brain, hasVisibleTarget, healthFrac )
+		}
 		else
 		{
 			// Cloak/stim to break away as soon as a retreat starts, or when a fight is going badly.
@@ -11294,6 +11498,10 @@ function UpdateAbilities( bot, brain, isTitan, hasVisibleTarget )
 
 	// Titan ordnance is held, not pressed: see UpdateTitanOrdnance.
 	if ( isTitan || now <= brain.nextOrdnanceTime )
+		return pressed
+
+	// Something is already on its way out of the hand (a grenade, or the Deployable Cover just above).
+	if ( brain.lobPos != null && now < brain.lobUntil )
 		return pressed
 
 	// Pressing it with no charge left does nothing: don't burn the whole cooldown on that.
@@ -11339,6 +11547,7 @@ function UpdateAbilities( bot, brain, isTitan, hasVisibleTarget )
 	brain.lobPos = throwAt
 	brain.lobProfile = profile
 	brain.lobDrop = drop
+	brain.lobTarget = ( "straight" in profile ) ? brain.target : null
 	brain.lobUntil = now + BOT_ORDNANCE_LOB_TIME
 	if ( drop )
 		AimTowards( brain, brain.yaw, BOT_ORDNANCE_DROP_PITCH )
@@ -11347,6 +11556,154 @@ function UpdateAbilities( bot, brain, isTitan, hasVisibleTarget )
 	pressed = pressed | BOT_IN_OFFHAND_ORDNANCE
 	brain.nextOrdnanceTime = now + RandomFloat( BOT_ORDNANCE_COOLDOWN_MIN, BOT_ORDNANCE_COOLDOWN_MAX ) * brain.lethality.pilot.grenadeCooldownScale
 	return pressed
+}
+
+function GetBotTacticalClass( bot )
+{
+	local tactical = bot.GetOffhandWeapon( 1 )
+	return IsValid( tactical ) ? tactical.GetWeaponClassName() : ""
+}
+
+//---------------------------------------------------------
+// Frontier Overhaul tacticals (only reached with that addon's weapons, see BOT_FO_*)
+//---------------------------------------------------------
+// Deployable Cover: taking fire in a fight, on our feet: drop it at our feet and fight from inside
+// the dome. Not against titans (a stomp or a few rounds and it's gone), not while running away.
+function WantsDeployableCover( bot, brain, hasVisibleTarget )
+{
+	if ( brain.dome != null || brain.evac != null || brain.fleeing || !hasVisibleTarget )
+		return false
+	if ( Time() > brain.underFireUntil || !IsBotOnFloor( bot ) || bot.IsWallRunning() )
+		return false
+	if ( brain.target == null || !IsValid( brain.target ) || IsTitanEntity( brain.target ) )
+		return false
+	local tactical = bot.GetOffhandWeapon( 1 )
+	return IsValid( tactical ) && tactical.GetWeaponPrimaryClipCount() > 0
+}
+
+// The cover is tossed like a satchel being dropped: looking down at our feet (it sticks there).
+function StartCoverThrow( bot, brain )
+{
+	local now = Time()
+	brain.lobPos = bot.GetOrigin()
+	brain.lobProfile = null
+	brain.lobDrop = true
+	brain.lobTarget = null
+	brain.lobUntil = now + BOT_ORDNANCE_LOB_TIME
+	AimTowards( brain, brain.yaw, BOT_ORDNANCE_DROP_PITCH )
+	brain.dome = { pos = bot.GetOrigin(), start = now, until = now + BOT_COVER_HOLD_MAX, sphere = null, nextScan = now + BOT_COVER_ARM_TIME }
+}
+
+// Where to move to stay in our dome, or null once it's over. A zero vector means stand still.
+// Until the dome is up: fight as usual (the cover sticks at our feet). Then: near its center, side-stepping across
+// the line to the target. An enemy that walked in makes it useless: back to fighting as usual.
+function GetCoverHoldMove( bot, brain )
+{
+	local c = brain.dome
+	local now = Time()
+	if ( now > c.until || brain.evac != null )
+	{
+		brain.dome = null
+		return null
+	}
+	local origin = bot.GetOrigin()
+
+	if ( c.sphere == null )
+	{
+		if ( now >= c.nextScan )
+		{
+			c.nextScan = now + 0.25
+			c.sphere = FindOwnCoverDome( bot, c.pos )
+			if ( c.sphere != null )
+				brain.nextTacticalTime = now + BOT_COVER_COOLDOWN
+		}
+		if ( c.sphere == null )
+		{
+			if ( now - c.start > BOT_COVER_FIND_TIME )
+			{
+				// The toss didn't happen (still recharging, or it fell somewhere it couldn't stick).
+				brain.dome = null
+				brain.nextTacticalTime = now + BOT_COVER_RETRY
+			}
+			return null	// keep fighting as usual until the dome is up
+		}
+	}
+	if ( !IsValid( c.sphere ) )
+	{
+		brain.dome = null	// timed out or shot down
+		return null
+	}
+
+	local center = c.sphere.GetOrigin()
+	local target = brain.target
+	if ( target == null || !IsValid( target ) || !IsAlive( target ) )
+	{
+		local toCenter = center - origin
+		toCenter = Vector( toCenter.x, toCenter.y, 0 )
+		return Length2D( toCenter ) > BOT_COVER_STAY_RADIUS ? toCenter : Vector( 0, 0, 0 )
+	}
+	local fromTarget = center - target.GetOrigin()
+	fromTarget = Vector( fromTarget.x, fromTarget.y, 0 )
+	local len = Length2D( fromTarget )
+	if ( len < BOT_COVER_DOME_RADIUS )	// an enemy walked in: the dome no longer shields us from it
+	{
+		brain.dome = null
+		return null
+	}
+	fromTarget = fromTarget * ( 1.0 / len )
+	local along = Vector( -fromTarget.y, fromTarget.x, 0 )
+	if ( now > brain.nextStrafeFlip )
+	{
+		brain.strafeDir = -brain.strafeDir
+		brain.nextStrafeFlip = now + RandomFloat( 0.8, 1.6 )
+	}
+	local lateral = BotClamp( ( origin - center ).Dot( along ) + brain.strafeDir * 50.0, -BOT_COVER_STRAFE, BOT_COVER_STRAFE )
+	local toSpot = center + along * lateral - origin
+	return Vector( toSpot.x, toSpot.y, 0 )
+}
+
+// The dome is a vortex_sphere owned by the pilot that threw the cover, where the cover stuck.
+function FindOwnCoverDome( bot, near )
+{
+	foreach ( ent in GetEntArrayByClass_Expensive( "vortex_sphere" ) )
+	{
+		if ( IsValid( ent ) && ent.GetOwner() == bot && Distance( ent.GetOrigin(), near ) < 600.0 )
+			return ent
+	}
+	return null
+}
+
+// Hologram: a fake pilot runs off the way we face and we cloak for a moment. Sent at the enemy when
+// a fight is going badly (it draws the fire while we slip away), when shot by someone we can't see,
+// on the evac run under threat, and now and then to open a new fight.
+function WantsHologram( bot, brain, hasVisibleTarget, healthFrac )
+{
+	local now = Time()
+	// Ours is still running about: another press would replace it (and the log would show uses
+	// that are only presses during the cooldown).
+	if ( "hologram" in bot.s && IsValid( bot.s.hologram ) )
+		return false
+	// The decoy copies an anti-titan weapon in our hands, and Frontier Overhaul's soldier AI can't
+	// give an NPC the MGL or the Charge Rifle (a script error each time it tries).
+	local active = bot.GetActiveWeapon()
+	if ( IsValid( active ) )
+	{
+		local activeClass = active.GetWeaponClassName()
+		if ( activeClass == "mp_weapon_mgl" || activeClass == "mp_weapon_defender" )
+			return false
+	}
+	if ( brain.evac != null )
+		return hasVisibleTarget || now < brain.underFireUntil
+	if ( hasVisibleTarget && healthFrac < BOT_TACTICAL_LOW_HEALTH )
+		return true
+	if ( !hasVisibleTarget && now < brain.underFireUntil && ( brain.target == null || !IsValid( brain.target ) ) )
+		return true
+	if ( hasVisibleTarget && brain.hologramRollTarget != brain.target && !IsTitanEntity( brain.target ) )
+	{
+		brain.hologramRollTarget = brain.target
+		return RandomInt( 100 ) < BOT_HOLOGRAM_ENGAGE_CHANCE
+	}
+	return false
 }
 
 // Throw range and arc for this ordnance (see file.ordnanceProfiles); frag-like defaults otherwise.
@@ -11384,6 +11741,16 @@ function GetPilotGrenadeSpot( bot, brain, hasVisibleTarget, healthFrac, profile,
 		local dist = Distance( origin, targetPos )
 		if ( dist < profile.minDist || dist > profile.maxDist )
 			return null
+		// Throwing knife: it does nothing to titans, and kills anything else in one hit. Thrown
+		// straight at the body (the hold after the press keeps tracking it, see BotThinkTick).
+		if ( "straight" in profile )
+		{
+			if ( IsTitanEntity( target ) )
+				return null
+			if ( !target.IsPlayer() && RandomInt( 100 ) >= BOT_ORDNANCE_NPC_CHANCE )
+				return null
+			return target.GetWorldSpaceCenter()
+		}
 		local isTitan = IsTitanEntity( target )
 		local use = false
 		if ( isTitan )
@@ -11416,8 +11783,8 @@ function GetPilotGrenadeSpot( bot, brain, hasVisibleTarget, healthFrac, profile,
 		return targetPos
 	}
 
-	// Flush it out of cover.
-	if ( !target.IsPlayer() || IsTitanEntity( target ) || brain.targetLastSeenPos == null )
+	// Flush it out of cover (not with a knife: it only hits what it's thrown straight at).
+	if ( "straight" in profile || !target.IsPlayer() || IsTitanEntity( target ) || brain.targetLastSeenPos == null )
 		return null
 	local lost = Time() - brain.targetLastSeenTime
 	if ( lost < BOT_ORDNANCE_COVER_MIN || lost > BOT_ORDNANCE_COVER_MAX )

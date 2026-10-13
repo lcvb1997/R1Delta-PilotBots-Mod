@@ -6,6 +6,10 @@
 //=========================================================
 
 const BOT_RECONCILE_DELAY = 1.0
+// Private match bot count (pm_bot_count, see ui/menu_mode_select.nut); kept here rather than in
+// _consts.nut so mods that replace _consts.nut don't remove them.
+const BOT_PM_COUNT_MAX = 10
+const BOT_PM_COUNT_DEFAULT = 10	// private matches without the setting applied
 
 function main()
 {
@@ -72,7 +76,7 @@ function BotManagerEnabledForMode()
 	if ( !( "BotCreate" in getroottable() ) )
 		return false
 
-	// Capture Point is played as an objective mode (see GetObjectivePoint in _bot_ai).
+	// Capture Point is played as an objective mode (see GetObjectivePoint in _pilotbots_ai).
 	switch ( GameRules.GetGameMode() )
 	{
 		case ATTRITION:
@@ -115,12 +119,12 @@ function GetDesiredBotCount( humanCount )
 	// A private match where the setting was never applied gets the menu's default.
 	local count = GetCurrentPlaylistVarInt( "bot_count", -1 )
 	if ( count < 0 && IsPrivateMatch() )
-		count = PM_BOT_COUNT_DEFAULT
+		count = BOT_PM_COUNT_DEFAULT
 	if ( count < 0 )
 		return max( 0, GetBotFillTarget() - humanCount )
 
 	local room = GetCurrentPlaylistVarInt( "max players", 12 ) - 1 - humanCount
-	return max( 0, min( min( count, PM_BOT_COUNT_MAX ), room ) )
+	return max( 0, min( min( count, BOT_PM_COUNT_MAX ), room ) )
 }
 
 function BotManager_OnClientConnected( player )
