@@ -1,0 +1,6 @@
+# Build output (build.bat). Release files go to GitHub Releases, not to the repository.
+build/
+release/
+installer/ferramentas/
+installer/payload/POMotorNativoBots/
+*.pbtmp
