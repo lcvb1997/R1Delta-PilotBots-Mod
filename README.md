@@ -41,6 +41,20 @@ and logs the reason to `r1delta\bin_delta\pilotbots.log`.
 
 ## Changelog
 
+### 2.1.2
+
+- Players now get the lock-on warning (the "LOCKING ON" / "LOCKED" box and alarm) when a bot locks onto them
+  with the Archer, Multi-Target Missiles or Slaved Warheads.
+- Bots now fire the Archer: the game's lock-on never completes for bots, so it is set from script after the
+  bot has held its sights on the titan for a moment. If the Archer keeps failing to fire, bots stop using it
+  for the rest of the map.
+- Titan bots now use Slaved Warheads. Before, they waited for a lock that never came and never fired them.
+- Bot loadouts now change from match to match. The game's random roll was never seeded, so every match
+  gave the bots the same weapons.
+- Frontier Overhaul: fixed the script error when executing a piloted titan outside Attrition.
+- Bot names: the meme names are gone, replaced by Titanfall-style names (Elena Castro, Pilot Hudson, Marauder 2-1,
+  Santiago [MCOR]...), with more surnames such as Castro, Hudson, Marques, Santiago and Alphonse.
+
 ### 2.1.1
 
 - Fixed the recurring "Internal Server script error" with Frontier Overhaul's Hologram: the decoy no longer
@@ -120,6 +134,19 @@ correções. Cada hook confere os bytes antes de ser instalado; problemas ficam 
 
 **Limitações:** só funciona ao hospedar pelo cliente (sem efeito no `R1Delta_DS.exe`). Alguns arquivos oficiais
 ainda são substituídos (feitos sobre o R1Delta 2.14.x); o resto entra por scripts autorun, sem alterar o jogo.
+
+**Novidades da 2.1.2:**
+- Os jogadores agora recebem o aviso de lock (o balão "TRAVANDO" / "TRAVADO" e o alarme) quando um bot trava
+  neles com o Archer, os Multi-Target Missiles ou as Slaved Warheads.
+- Os bots agora disparam o Archer: o lock do jogo nunca completa para bots, então ele é feito por script depois
+  que o bot mantém a mira no titã por um instante. Se o Archer continuar sem disparar, os bots deixam de usá-lo
+  até o fim do mapa.
+- Os titãs bots agora usam as Slaved Warheads. Antes, eles esperavam um lock que nunca vinha e nunca disparavam.
+- Os loadouts dos bots agora mudam a cada partida. O sorteio do jogo nunca era inicializado, então os bots
+  recebiam as mesmas armas em todas as partidas.
+- Frontier Overhaul: corrigido o erro de script ao executar um titã pilotado fora do modo Attrition.
+- Nomes dos bots: os nomes de meme saíram e deram lugar a nomes no estilo Titanfall (Elena Castro, Pilot Hudson,
+  Marauder 2-1, Santiago [MCOR]...), com mais sobrenomes, como Castro, Hudson, Marques, Santiago e Alphonse.
 
 **Novidades da 2.1.1:** corrigido o "Internal Server script error" recorrente com o holograma do Frontier Overhaul
 (também quando usado por jogadores); os bots não lançam holograma segurando arma antitanque e não ficam mais

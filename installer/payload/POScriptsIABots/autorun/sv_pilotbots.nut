@@ -579,4 +579,18 @@ function PilotBots_IntroDeathCallback( player, damageInfo )
 }
 AddCallback_OnPlayerKilled( PilotBots_IntroDeathCallback )
 
-PilotBots_Log( "campaign intro death log installed; all done" )
+PilotBots_Log( "campaign intro death log installed" )
+
+//---------------------------------------------------------
+// Frontier Overhaul: titan executions outside Attrition
+//---------------------------------------------------------
+// FO's _score.nut (AwardPilotTermination) calls Attrition_AwardPilotTermination in every mode, but
+// only Attrition loads mp/attrition.nut, which defines it: a script error on each piloted titan
+// executed. Outside Attrition there are no attrition points to give, so an empty stand-in.
+if ( !( "Attrition_AwardPilotTermination" in getroottable() ) )
+{
+	::Attrition_AwardPilotTermination <- function( attacker, titan, isCaptain = false ) {}
+	PilotBots_Log( "attrition award stand-in installed" )
+}
+
+PilotBots_Log( "all done" )

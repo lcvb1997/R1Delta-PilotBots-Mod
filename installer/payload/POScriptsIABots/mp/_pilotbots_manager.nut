@@ -130,7 +130,28 @@ function GetDesiredBotCount( humanCount )
 function BotManager_OnClientConnected( player )
 {
 	if ( !player.IsBot() )
+	{
 		QueueBotReconcile()
+		return
+	}
+
+	// The stock connect code gives every bot the same template (SetBotPilotLoadout/SetBotTitanLoadout)
+	// right before these callbacks, and bot_randomize_loadout is answered 0 (sv_pilotbots.nut), so
+	// this is where a managed bot gets its own loadout. Once: the callbacks can run twice for a bot.
+	if ( IsManagedBot( player ) && !( "pilotBotsLoadoutRolled" in player.s ) )
+	{
+		player.s.pilotBotsLoadoutRolled <- true
+		try
+		{
+			BotRandomizeLoadouts( player )
+		}
+		catch ( e )
+		{
+			printt( "BotManager: loadout roll failed for", player.GetPlayerName(), e )
+			if ( "PilotBotsLog" in getroottable() )
+				PilotBotsLog( "BotManager: loadout roll failed for " + player.GetPlayerName() + ": " + e )
+		}
+	}
 }
 
 function BotManager_OnClientDisconnected( player )
@@ -316,7 +337,7 @@ function GenerateAnyBotName()
 		case 1:
 			return GenerateCallsign()
 	}
-	return GenerateMemeName()
+	return GenerateFrontierName()
 }
 
 function BotNameAvailable( name )
@@ -366,95 +387,52 @@ function GenerateGamertag()
 function GenerateCallsign()
 {
 	local ranks = [ "Pvt.", "Cpl.", "Sgt.", "SSgt.", "Lt.", "Capt.", "Maj.", "Col.", "Cmdr." ]
-	local surnames = [ "Blackwood", "Kane", "Mercer", "Graves", "Reyes", "Voss", "Hale", "Bishop", "Cross", "Steele",
-		"Ward", "Drake", "Rourke", "Navarro", "Okafor", "Sato", "Ivanov", "Novak", "Silva", "Holt", "Briggs", "Vance",
-		"Kowalski", "Mbeki", "Larsen", "Ortega", "Costa", "Fischer", "Tanaka", "Ramos" ]
 	local codenames = [ "Raptor", "Echo", "Bravo", "Hammer", "Anvil", "Talon", "Saber", "Vulture", "Jester", "Warden",
 		"Halo", "Zulu", "Sierra", "Kilo", "Mako", "Bolt", "Ranger", "Outlaw", "Hydra", "Lancer" ]
 
 	switch ( RandomInt( 3 ) )
 	{
 		case 0:
-			return PickRandom( ranks ) + " " + PickRandom( surnames )
+			return PickRandom( ranks ) + " " + PickRandom( GetBotSurnames() )
 		case 1:
 			return PickRandom( codenames ) + "-" + ( RandomInt( 9 ) + 1 )
 	}
-	return PickRandom( codenames ) + " " + PickRandom( surnames )
+	return PickRandom( codenames ) + " " + PickRandom( GetBotSurnames() )
 }
 
-// Internet meme style: Lt. Larper, Mogger-67, Aura_maxxing, SigmaClanker, xRizzlerx
-function GenerateMemeName()
+// Frontier style: Elena Castro, Pilot Hudson, Marauder 2-1, Santiago [MCOR], Yuma Actual
+function GenerateFrontierName()
 {
-	local ranks = [ "Pvt.", "Cpl.", "Sgt.", "Lt.", "Capt.", "Maj.", "Col.", "Cmdr.", "Gen." ]
-	// Nouns that read as a person: work after a rank, before a number, alone
-	local people = [ "Larper", "Mogger", "Rizzler", "Yapper", "Glazer", "Clanker", "Sigma", "Unc", "NPC", "Delulu",
-		"Crashout", "Skibidi", "Mewer", "Jester", "Fanum", "Goober", "Aura Farmer", "Chill Guy", "Ohio Boss",
-		"Tung Tung", "Sahur", "Tralalero", "Brainrot", "Ratio", "Copium", "Doomscroll", "Lowtaper", "Huzz" ]
-	// Things you can max: Aura_maxxing, Rizzmaxxer
-	local maxxables = [ "Aura", "Rizz", "Looks", "Sigma", "Yap", "Mog", "Cope", "Grind", "Jester", "Sleep",
-		"Bounce", "Gun", "Wallrun", "Titan", "Ejection" ]
-	local tails = [ "67", "6-7", "41", "69", "420", "999", "1000", "NoCap", "Fr", "Ong", "Cooked", "Bussin", "Ohio",
-		"Mid", "W", "L", "GOAT", "Era", "Core", "Mode" ]
-	local leads = [ "Lowkey", "Highkey", "Certified", "Literally", "Unironically", "Sigma", "Ohio", "Skibidi",
-		"Mid", "Cooked", "Chopped", "Delulu", "Locked In", "Based", "Feral", "Cracked", "Goofy" ]
+	local firstNames = [ "Elena", "Marco", "Rafael", "Isabel", "Tomas", "Nadia", "Victor", "Mara", "Owen", "Rhea",
+		"Dmitri", "Ana", "Hector", "Jun", "Felix", "Iris", "Mateo", "Leon", "Sofia", "Ezra", "Yara", "Andre",
+		"Lucas", "Daniel", "Kai", "Teresa", "Samuel", "Ines", "Gabriel", "Lena" ]
+	// IMC and Militia units, ships and Frontier worlds
+	local units = [ "Marauder", "Frontier", "Typhon", "Demeter", "Harmony", "Hammond", "Odyssey", "Redeye",
+		"Bastion", "Yuma", "Boneyard", "Outpost", "Nexus", "Relic", "Colony", "Fracture", "Freeport", "Sentinel" ]
+	local tags = [ "[IMC]", "[MCOR]", "[6-4]", "[APEX]", "[MRC]", "[SRS]" ]
+	local pilotRanks = [ "Pilot", "Pilot", "Ace", "Rifleman", "Vanguard" ]
 
-	local name
-	switch ( RandomInt( 7 ) )
+	switch ( RandomInt( 5 ) )
 	{
-		case 6:		// John Titanfall
-		{
-			local john = PickRandom( [ "Titanfall", "Titanfall", "Titanfall", "Pilot", "Wallrun", "Smart Pistol", "Kraber",
-				"IMC", "Militia", "Ogre", "Atlas", "Stryder", "Grunt", "Spectre", "Marvin", "Dropship", "Evac",
-				"Pork", "Skibidi", "Ohio", "Sigma", "Clanker", "Fortnite", "Respawn" ] )
-			return RandomInt( 4 ) == 0 ? "John " + john + " " + PickRandom( [ "2", "Jr.", "III", "67" ] ) : "John " + john
-		}
-		case 0:		// Lt. Larper
-			name = PickRandom( ranks ) + " " + PickRandom( people )
-			break
-		case 1:		// Mogger-67
-			name = PickRandom( people ) + "-" + PickRandom( [ "67", "67", "41", "69", "420", "1000" ] )
-			break
-		case 2:		// Aura_maxxing, RizzMaxxer
-		{
-			local base = PickRandom( maxxables )
-			local suffix = PickRandom( [ "_maxxing", "maxxing", "Maxxing", "Maxxer", "_maxxer", "maxx" ] )
-			name = base + suffix
-			break
-		}
-		case 3:		// CertifiedYapper, Locked In Clanker
-			name = PickRandom( leads ) + ( RandomInt( 2 ) == 0 ? " " : "" ) + PickRandom( people )
-			break
-		case 4:		// Rizzler_NoCap, SigmaOhio
-			name = PickRandom( people ) + ( RandomInt( 2 ) == 0 ? "_" : "" ) + PickRandom( tails )
-			break
-		default:	// xRizzlerx, iAmTheMogger
-		{
-			local person = PickRandom( people )
-			local wrap = RandomInt( 3 )
-			if ( wrap == 0 )
-				name = "x" + person + "x"
-			else if ( wrap == 1 )
-				name = "TheReal" + person
-			else
-				name = "Not" + person
-			break
-		}
+		case 0:		// Elena Castro
+			return PickRandom( firstNames ) + " " + PickRandom( GetBotSurnames() )
+		case 1:		// Pilot Hudson
+			return PickRandom( pilotRanks ) + " " + PickRandom( GetBotSurnames() )
+		case 2:		// Marauder 2-1, Typhon-4
+			return PickRandom( units ) + ( RandomInt( 2 ) == 0 ? " " + ( RandomInt( 6 ) + 1 ) + "-" + ( RandomInt( 9 ) + 1 ) : "-" + ( RandomInt( 9 ) + 1 ) )
+		case 3:		// Santiago [MCOR]
+			return PickRandom( GetBotSurnames() ) + " " + PickRandom( tags )
 	}
-
-	// Spaces only make sense in the rank/lead styles; tags lose them like real handles
-	if ( name.find( "." ) == null && RandomInt( 2 ) == 0 )
-		name = StripSpaces( name )
-	if ( RandomInt( 6 ) == 0 )
-		name = name.tolower()
-	return name
+	return PickRandom( units ) + " " + PickRandom( [ "Actual", "Lead", "Two", "Three", "Six" ] )
 }
 
-function StripSpaces( text )
+function GetBotSurnames()
 {
-	local result = ""
-	foreach ( part in split( text, " " ) )
-		result = result + part
-	return result
+	return [ "Blackwood", "Kane", "Mercer", "Reyes", "Voss", "Hale", "Bishop", "Cross", "Steele",
+		"Ward", "Drake", "Rourke", "Navarro", "Okafor", "Sato", "Ivanov", "Novak", "Silva", "Holt", "Briggs", "Vance",
+		"Kowalski", "Mbeki", "Larsen", "Ortega", "Costa", "Fischer", "Tanaka", "Ramos",
+		"Castro", "Hudson", "Marques", "Santiago", "Alphonse", "Moreau", "Delgado", "Rocha", "Abara", "Kessler",
+		"Lindqvist", "Okoro", "Petrov", "Quintero", "Soto", "Varga", "Whitlock", "Yilmaz", "Zhou", "Ferreira" ]
 }
 
 //---------------------------------------------------------
@@ -463,13 +441,13 @@ function StripSpaces( text )
 function BotRandomizeLoadouts( player )
 {
 	local pilotTable = player.playerClassData[ level.pilotClass ]
-	RandomizeBotLoadout( pilotTable, false )
+	BotRollLoadout( pilotTable, false )
 	pilotTable.passive1 <- PassiveBitfieldFromEnum( PickRandomItemRef( itemType.PILOT_PASSIVE1 ) )
 	pilotTable.passive2 <- PassiveBitfieldFromEnum( PickRandomItemRef( itemType.PILOT_PASSIVE2 ) )
 	OverrideBotLoadout( pilotTable, false )
 
 	local titanTable = player.playerClassData[ "titan" ]
-	RandomizeBotLoadout( titanTable, true )
+	BotRollLoadout( titanTable, true )
 	titanTable.passive1 <- PassiveBitfieldFromEnum( PickRandomItemRef( itemType.TITAN_PASSIVE1 ) )
 	titanTable.passive2 <- PassiveBitfieldFromEnum( PickRandomItemRef( itemType.TITAN_PASSIVE2 ) )
 	OverrideBotLoadout( titanTable, true )
@@ -478,6 +456,24 @@ function BotRandomizeLoadouts( player )
 		pilotTable.sidearmWeapon, pilotTable.offhandWeapons[0].weapon, pilotTable.offhandWeapons[1].weapon,
 		"| titan", titanTable.playerSetFile, titanTable.primaryWeapon, titanTable.offhandWeapons[0].weapon,
 		titanTable.offhandWeapons[1].weapon )
+}
+
+// Same picks as the stock RandomizeBotLoadout (_utility.nut), but with RandomInt: that one uses
+// Squirrel's rand(), which is never seeded, so every match would roll the same loadouts.
+function BotRollLoadout( table, isTitan )
+{
+	table.primaryWeapon = PickRandomItemRef( isTitan ? itemType.TITAN_PRIMARY : itemType.PILOT_PRIMARY )
+	table.primaryWeaponMods = []
+	if ( !isTitan )
+	{
+		table.secondaryWeapon = PickRandomItemRef( itemType.PILOT_SECONDARY )
+		table.sidearmWeapon = PickRandomItemRef( itemType.PILOT_SIDEARM )
+	}
+	table.offhandWeapons[0].weapon = PickRandomItemRef( isTitan ? itemType.TITAN_ORDNANCE : itemType.PILOT_ORDNANCE )
+	table.offhandWeapons[0].mods = []
+	table.offhandWeapons[1].weapon = PickRandomItemRef( isTitan ? itemType.TITAN_SPECIAL : itemType.PILOT_SPECIAL )
+	table.offhandWeapons[1].mods = []
+	table.playerSetFile = PickRandomItemRef( isTitan ? itemType.TITAN_SETFILE : itemType.PILOT_SETFILE )
 }
 
 function PickRandomItemRef( type )

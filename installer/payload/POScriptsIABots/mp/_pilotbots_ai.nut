@@ -51,6 +51,12 @@ const BOT_AT_KEEP_TIME			= 6.0		// keep the anti-titan weapon out this long afte
 const BOT_AT_PILOT_SWAP_DIST	= 600.0		// an enemy pilot in sight this close: primary out, whatever titans are around
 const BOT_AT_CHARGE_MAX_HOLD	= 3.0		// charge rifle: let go after this long even if never lined up
 const BOT_AT_CHARGE_START_ANGLE	= 20.0		// ...and only start charging within this many degrees of the target
+const BOT_ARCHER_LOCK_ANGLE		= 10.0		// Archer: sights within this many degrees of a titan count as locking on...
+const BOT_ARCHER_LOCK_TIME		= 1.2		// ...and after this long without the game's lock, the lock is set from script
+const BOT_ARCHER_FIRE_CHECK		= 1.0		// a locked press is checked this long later to have fired (the clip dropped)
+const BOT_ARCHER_MAX_MISSES		= 3			// locked presses in a row that fire nothing: the Archer is dropped for the map
+const BOT_LOCK_WARN_AIM_GAP		= 0.3		// lock-on warning: the Archer counts as still locking this long after its last locking think
+const BOT_LOCK_WARN_STALE		= 0.4		// a warning no think has kept up for this long is taken down (dead bot, cinematic hold...)
 const BOT_SMART_LOCK_ANGLE		= 30.0		// smart pistol: pull the trigger on a lock while the target is this far into the 45 degree search cone
 const BOT_SMART_EARLY_CHANCE	= 15		// smart pistol: percent of shots fired one lock short of full (the margin of error)
 const BOT_SMART_SETTLE_MIN		= 0.0		// smart pistol: extra wait after the lock is there before the press...
@@ -243,6 +249,8 @@ const BOT_TITAN_ORDNANCE_GROUP	= 2			// grunts/spectres only get ordnance when t
 const BOT_TITAN_ORDNANCE_PILOT_CHANCE	= 40	// ...pilots this percent of the time; titans always
 const BOT_TITAN_ORDNANCE_PILOT_SKIP	= 3.0		// a lost pilot roll holds the ordnance back from pilots this long
 const BOT_TITAN_ORDNANCE_LOCK_REPORT	= 6.0	// Slaved Warheads wanted this long without ever locking: logged once
+const BOT_TITAN_SLAVED_LOCK_TIME	= 1.5	// Slaved Warheads: target this long in front of us without the game's lock, then it's set from script...
+const BOT_TITAN_SLAVED_LOCK_ANGLE	= 15.0	// ...counting only while it's within this many degrees of our view
 // Projectile speeds (units/s) for leading shots; weapons not listed are treated as hitscan.
 // From the weapon scripts (PROJECTILE_SPEED, missileSpeed, ...).
 const BOT_LEAD_MAX_TIME			= 1.2		// never lead further ahead than this
@@ -1108,6 +1116,8 @@ function main()
 		mp_weapon_mega5 = { minDist = 0.0, maxDist = BOT_KNIFE_MAX_DIST, lift = 0.0, liftMax = 0.0, drop = false, straight = true }
 	}
 	file.ordnanceMissReported <- {}	// titan ordnance class -> true once a held press was seen not firing
+	file.archerBroken <- false		// locked Archer presses kept firing nothing: not an anti-titan weapon this map
+	file.archerReported <- {}		// Archer log lines already written (see ArcherLog)
 	// Titan main weapons: the range band each one does its damage in. A titan fights from inside its
 	// own weapon's band (rolled per bot within it, see UpdateTitanPreferredDist): the shotgun and the
 	// arc cannon only hurt up close, the railgun / charge cannon want distance. Weapons not listed
@@ -1568,7 +1578,8 @@ function BotThink( bot )
 		ordnanceClip = -1		// ordnance clip when the press started (a drop = it fired)
 		ordnanceVerifyAt = 0.0	// check that the last press fired something at this time
 		ordnancePilotSkipUntil = 0.0	// titan ordnance held back from pilots until then (lost roll)
-		ordnanceLockWaitSince = 0.0	// Slaved Warheads ready with a target but no lock since (0 = not waiting)
+		ordnanceLockWaitSince = 0.0	// Slaved Warheads ready with a target in front of us but no lock since (0 = not waiting)
+		ordnanceLockSeen = 0.0	// ...last check that found it so (the lock-on warning follows it)
 		lobProfile = null		// ordnance profile of the grenade in lobPos (see GetOrdnanceProfile)
 		lobDrop = false			// the grenade in lobPos is dropped at our feet while running (look down, keep facing)
 		lobTarget = null		// a straight throw (the knife) follows this target instead of lobPos
@@ -1595,6 +1606,12 @@ function BotThink( bot )
 		smartLocksWanted = -1	// smart pistol: locks to wait for before the next press (-1 = roll again)
 		smartLockedTime = -1.0	// smart pistol: when that many locks were first there
 		smartNoLockSince = -1.0	// smart pistol: on target with no lock building since then
+		archerLockTarget = null	// Archer: the titan the sights have been on...
+		archerLockStart = -1.0	// ...since then (-1 = not locking)
+		archerFireClip = -1		// Archer: the clip at the last locked press...
+		archerFireCheckAt = 0.0	// ...checked then to have dropped (0 = nothing to check)
+		archerMisses = 0		// Archer: locked presses in a row that fired nothing
+		lockWarn = null			// lock-on warning shown to the player being locked onto (see UpdateLockWarning)
 		threatIsTitan = false	// the threat being run from is a titan (see FindThreatPosition)
 		titanEnemies = []		// enemy titans around a titan fight (see ScanTitanFight)
 		targetAimOffset = null	// the part of the target in sight, relative to its origin (riders: head or body over the titan)
@@ -2369,6 +2386,10 @@ function BotThinkTick( bot, brain )
 		brain.ordnanceHoldUntil = 0.0
 		brain.vortexHoldUntil = 0.0
 	}
+
+	// After the Archer (UpdateFiring) and the titan ordnance have had their say this tick.
+	try { UpdateLockWarning( bot, brain, isTitan ) }
+	catch ( e ) { BotReportError( bot, "UpdateLockWarning", e ); ClearLockWarning( brain ) }
 
 	if ( !isTitan )
 	{
@@ -10714,19 +10735,16 @@ function UpdateFiring( bot, brain, canShoot )
 	if ( fireMode == "spin" )
 		return UpdateMinigunFiring( brain, weapon, angleOff, maxAngle, now )
 
+	// Archer: a homing rocket, so it doesn't need the crosshair as tight as the onTarget check below.
+	if ( fireMode == "lock" )
+		return UpdateArcherFiring( bot, brain, weapon, angleOff, now )
+
 	if ( !onTarget )
 	{
 		brain.firing = false
 		return 0
 	}
 
-	if ( fireMode == "lock" )
-	{
-		// Archer: UpdateAds keeps the sights up; pull the trigger only once locked on
-		// (tapped, it fires once per press).
-		brain.firing = !brain.firing && IsSmartAmmoLocked( weapon )
-		return brain.firing ? BOT_IN_ATTACK : 0
-	}
 	if ( fireMode == "guided" )
 	{
 		// Archer with guided missiles: no lock-on, the rocket follows the sights. Tap the trigger
@@ -10872,6 +10890,277 @@ function UpdateSmartPistolFiring( brain, weapon, angleOff, onTarget, now )
 		return 0
 	brain.firing = true
 	return BOT_IN_ATTACK
+}
+
+// Archer (lock-on): UpdateAds keeps the sights up; the trigger is tapped only once locked on, as
+// the weapon refuses to fire unlocked (SmartAmmo_SetAllowUnlockedFiring false). The game's lock-on
+// doesn't complete for bots (the titans' homing rockets never lock either, see UpdateTitanOrdnance),
+// so after the sights have been on a titan for BOT_ARCHER_LOCK_TIME the lock is set from script, the
+// way Respawn's own AI fires smart ammo (_coop_titans.nut). Every locked press is checked to have
+// fired; after BOT_ARCHER_MAX_MISSES that didn't, the Archer is dropped for the map (GetBotAntiTitanWeapon).
+function UpdateArcherFiring( bot, brain, weapon, angleOff, now )
+{
+	if ( brain.archerFireCheckAt > 0.0 && now >= brain.archerFireCheckAt )
+	{
+		// Long overdue (the Archer was put away right after the press): the clip says nothing now.
+		local stale = now - brain.archerFireCheckAt > BOT_ARCHER_FIRE_CHECK
+		brain.archerFireCheckAt = 0.0
+		if ( !stale && weapon.GetWeaponPrimaryClipCount() < brain.archerFireClip )
+		{
+			brain.archerMisses = 0
+			ArcherLog( bot, weapon, "fired", "a locked press fired" )
+		}
+		else if ( !stale )
+		{
+			ArcherMiss( bot, brain, weapon, "a locked press fired nothing" )
+		}
+	}
+
+	// Tapped: one think on the trigger, then let go and wait for the check above.
+	if ( brain.firing )
+	{
+		brain.firing = false
+		return 0
+	}
+	if ( brain.archerFireCheckAt > 0.0 || weapon.GetWeaponPrimaryClipCount() <= 0 )
+		return 0
+
+	local target = brain.target
+	if ( target != brain.archerLockTarget )
+	{
+		brain.archerLockTarget = target
+		brain.archerLockStart = -1.0
+	}
+
+	local inAds = false
+	try { inAds = weapon.IsWeaponInAds() }
+	catch ( e ) {}
+	if ( !inAds || !IsTitanEntity( target ) || angleOff > BOT_ARCHER_LOCK_ANGLE )
+	{
+		brain.archerLockStart = -1.0
+		return 0
+	}
+	brain.atAimingTime = now
+
+	if ( !IsSmartAmmoLocked( weapon ) )
+	{
+		if ( brain.archerLockStart < 0 )
+			brain.archerLockStart = now
+		if ( now - brain.archerLockStart < BOT_ARCHER_LOCK_TIME )
+			return 0
+
+		ArcherLog( bot, weapon, "scriptlock", "no lock from the game after " + BOT_ARCHER_LOCK_TIME + " s in the sights, setting it from script" )
+		try
+		{
+			if ( !weapon.SmartAmmo_IsEnabled() )
+				weapon.SmartAmmo_Enable()
+			weapon.SmartAmmo_SetTarget( target, 1.0 )
+		}
+		catch ( e )
+		{
+			ArcherLog( bot, weapon, "seterror", "setting the lock failed: " + e )
+		}
+		if ( !IsSmartAmmoLocked( weapon ) )
+		{
+			brain.archerLockStart = -1.0	// try again after another lock time
+			ArcherMiss( bot, brain, weapon, "the lock set from script didn't take" )
+			return 0
+		}
+	}
+
+	brain.firing = true
+	brain.archerLockStart = -1.0
+	brain.archerFireClip = weapon.GetWeaponPrimaryClipCount()
+	brain.archerFireCheckAt = now + BOT_ARCHER_FIRE_CHECK
+	return BOT_IN_ATTACK
+}
+
+// Lock-on warning for the player a bot is locking onto ("ENEMY PILOT LOCKING ON" and the alarm).
+// The game builds it from the locking weapon's smart ammo targets, but bot locks don't build: the
+// Archer's lock is set from script at the end of its aim time (UpdateArcherFiring) and Multi-Target
+// Missiles are just held (UpdateTitanOrdnance), so the player was never warned. Same fix as
+// Respawn's coop AI (_coop_titans.nut LockOntoEnemy): a timed warning source that the game ramps
+// from 0 to full over the time left to the lock. Taken down as soon as the weapon has a real lock
+// on that player (the game shows that one itself; two sources would read as two enemies).
+function UpdateLockWarning( bot, brain, isTitan )
+{
+	local want = GetLockWarningWanted( bot, brain, isTitan )
+	local cur = brain.lockWarn
+	if ( cur != null && ( want == null || want.weapon != cur.weapon || want.victim != cur.victim ) )
+	{
+		ClearLockWarning( brain )
+		cur = null
+	}
+	if ( want == null )
+		return
+
+	if ( cur == null )
+	{
+		cur = { weapon = want.weapon, victim = want.victim, active = false, seen = Time() }
+		brain.lockWarn = cur
+		if ( !WeaponHasLockOn( want.weapon, want.victim ) )
+		{
+			try
+			{
+				SmartAmmo_SetCustomFractionSource( want.weapon, want.victim, want.time )
+				cur.active = true
+				thread LockWarningWatch( bot, cur )
+				LockWarningLog( bot, want )
+			}
+			catch ( e )
+			{
+				if ( !( "lockwarn" in file.archerReported ) )
+				{
+					file.archerReported[ "lockwarn" ] <- true
+					local line = "BotAI: lock-on warning failed: " + e
+					printt( line )
+					if ( "PilotBotsLog" in getroottable() )
+						PilotBotsLog( line )
+				}
+			}
+		}
+	}
+	else if ( cur.active && WeaponHasLockOn( cur.weapon, cur.victim ) )
+	{
+		ClearLockWarningEntry( cur )
+	}
+	cur.seen = Time()
+}
+
+// { weapon, victim, time to the full lock } for the lock the bot is building on a human player, or null.
+function GetLockWarningWanted( bot, brain, isTitan )
+{
+	local victim = brain.target
+	if ( !IsValid( victim ) || !victim.IsPlayer() || victim.IsBot() || !IsAlive( victim ) )
+		return null
+	local now = Time()
+
+	if ( isTitan )
+	{
+		local weapon = bot.GetOffhandWeapon( 0 )
+		if ( !IsValid( weapon ) )
+			return null
+		// Multi-Target Missiles held on the target.
+		if ( brain.ordnanceHoldUntil > 0.0 )
+		{
+			if ( brain.ordnanceMode != "charge" )
+				return null
+			return { weapon = weapon, victim = victim, time = max( BOT_TITAN_ORDNANCE_LOCK_MIN - ( now - brain.ordnanceHoldStart ), 0.05 ) }
+		}
+		// Slaved Warheads counting down to the lock set from script (UpdateTitanOrdnance checks it
+		// only every BOT_TITAN_ORDNANCE_CHECK, hence the gap).
+		local gap = BOT_TITAN_ORDNANCE_CHECK * brain.lethality.titan.ordnanceDelayScale + 0.2
+		if ( brain.ordnanceLockWaitSince <= 0.0 || now - brain.ordnanceLockSeen > gap || GetTitanOrdnanceMode( weapon ) != "lock" )
+			return null
+		return { weapon = weapon, victim = victim, time = max( BOT_TITAN_SLAVED_LOCK_TIME - ( now - brain.ordnanceLockWaitSince ), 0.05 ) }
+	}
+
+	// Archer sights on the titan, counting down to the lock (archerLockStart is left behind when
+	// the bot stops shooting, hence the recent-aim check).
+	local weapon = bot.GetActiveWeapon()
+	if ( !IsValid( weapon ) || GetWeaponFireMode( weapon ) != "lock" || brain.archerLockStart < 0
+		|| brain.archerLockTarget != victim || now - brain.atAimingTime > BOT_LOCK_WARN_AIM_GAP )
+		return null
+	return { weapon = weapon, victim = victim, time = max( BOT_ARCHER_LOCK_TIME - ( now - brain.archerLockStart ), 0.05 ) }
+}
+
+// First warning per weapon class per map in pilotbots.log, to tell from there that the detector went off.
+function LockWarningLog( bot, want )
+{
+	local weaponClass = want.weapon.GetWeaponClassName()
+	if ( ( "lockwarn " + weaponClass ) in file.archerReported )
+		return
+	file.archerReported[ "lockwarn " + weaponClass ] <- true
+	local line = "BotAI: lock-on warning: " + bot.GetPlayerName() + " -> " + want.victim.GetPlayerName() + " (" + weaponClass + ", " + want.time + " s to the lock)"
+	printt( line )
+	if ( "PilotBotsLog" in getroottable() )
+		PilotBotsLog( line )
+}
+
+// The weapon's own smart ammo is building a lock on this player (the game warns them itself).
+function WeaponHasLockOn( weapon, victim )
+{
+	if ( !weapon.SmartAmmo_IsEnabled() )
+		return false
+	foreach ( target in weapon.SmartAmmo_GetTargets() )
+	{
+		if ( target.entity == victim && target.fraction > 0.01 )	// _smart_ammo.nut parks known targets at 0.0001
+			return true
+	}
+	return false
+}
+
+// Takes the warning down if no think keeps it up any more (bot died, think stopped, intro hold...).
+function LockWarningWatch( bot, entry )
+{
+	bot.EndSignal( "OnDeath" )
+	bot.EndSignal( "OnDestroy" )
+	bot.EndSignal( "Disconnected" )
+
+	OnThreadEnd(
+		function() : ( entry )
+		{
+			ClearLockWarningEntry( entry )
+		}
+	)
+
+	while ( entry.active && Time() - entry.seen < BOT_LOCK_WARN_STALE )
+		wait 0.1
+}
+
+function ClearLockWarning( brain )
+{
+	if ( brain.lockWarn == null )
+		return
+	ClearLockWarningEntry( brain.lockWarn )
+	brain.lockWarn = null
+}
+
+// (The game drops the source by itself once the weapon or the player is gone.)
+function ClearLockWarningEntry( entry )
+{
+	if ( !entry.active )
+		return
+	entry.active = false
+	if ( IsValid( entry.weapon ) && IsValid( entry.victim ) )
+	{
+		try { SmartAmmo_ClearCustomFractionSource( entry.weapon, entry.victim ) }
+		catch ( e ) {}
+	}
+}
+
+function ArcherMiss( bot, brain, weapon, why )
+{
+	ArcherLog( bot, weapon, why, why )
+	if ( ++brain.archerMisses < BOT_ARCHER_MAX_MISSES || file.archerBroken )
+		return
+	file.archerBroken = true
+	ArcherLog( bot, weapon, "broken", BOT_ARCHER_MAX_MISSES + " misses in a row: the Archer is no longer used against titans on this map" )
+}
+
+// One line per kind of event per map in the console and pilotbots.log, with the lock-on state.
+function ArcherLog( bot, weapon, key, text )
+{
+	if ( key in file.archerReported )
+		return
+	file.archerReported[ key ] <- true
+
+	local state = "ads bit " + ( file.adsBit == null ? "?" : file.adsBit )
+	try
+	{
+		state += ", in ads " + weapon.IsWeaponInAds() + ", smart ammo " + weapon.SmartAmmo_IsEnabled()
+		if ( weapon.SmartAmmo_IsEnabled() )
+		{
+			foreach ( entry in weapon.SmartAmmo_GetTargets() )
+				state += ", target " + ( IsValid( entry.entity ) ? entry.entity.GetClassname() : "?" ) + " " + entry.fraction
+		}
+	}
+	catch ( e ) {}
+
+	local line = "BotAI: " + bot.GetPlayerName() + " Archer: " + text + " (" + state + ")"
+	printt( line )
+	if ( "PilotBotsLog" in getroottable() )
+		PilotBotsLog( line )
 }
 
 // Lock progress of a smart ammo weapon on one target: whole numbers are full locks.
@@ -11362,7 +11651,7 @@ function WantsAntiTitanWeapon( bot, brain )
 function GetBotAntiTitanWeapon( bot )
 {
 	local weapon = GetPilotAntiTitanWeapon( bot )
-	if ( weapon != null && weapon.GetWeaponClassName() == "mp_weapon_rocket_launcher" && file.adsBit == 0 )
+	if ( weapon != null && weapon.GetWeaponClassName() == "mp_weapon_rocket_launcher" && ( file.adsBit == 0 || file.archerBroken ) )
 		return null
 	return weapon
 }
@@ -11974,17 +12263,47 @@ function UpdateTitanOrdnance( bot, brain, hasVisibleTarget )
 		catch ( e ) {}
 		if ( !locked )
 		{
-			// Never locking at all (the offhand's smart ammo not running for bots?) would just look
-			// like a titan that doesn't use its ordnance: say so once.
+			// The game's lock-on doesn't build for bots (same as the Archer, see UpdateArcherFiring):
+			// once the target has been in front of us for BOT_TITAN_SLAVED_LOCK_TIME, the lock is set
+			// from script, the way Respawn's coop titans fire it (_coop_titans.nut RocketPodsFire_HomingRockets).
+			// Meanwhile the player being locked onto gets the warning (UpdateLockWarning).
+			local toTarget = VectorToAngles( target.GetWorldSpaceCenter() - bot.EyePosition() )
+			if ( fabs( NormalizeYaw( toTarget.y - brain.yaw ) ) > BOT_TITAN_SLAVED_LOCK_ANGLE )
+			{
+				brain.ordnanceLockWaitSince = 0.0
+				return 0
+			}
 			if ( brain.ordnanceLockWaitSince == 0.0 )
 				brain.ordnanceLockWaitSince = now
-			else if ( now - brain.ordnanceLockWaitSince > BOT_TITAN_ORDNANCE_LOCK_REPORT && !( "nolock" in file.ordnanceMissReported ) )
+			brain.ordnanceLockSeen = now
+			if ( now - brain.ordnanceLockWaitSince < BOT_TITAN_SLAVED_LOCK_TIME )
+				return 0
+
+			try
 			{
-				file.ordnanceMissReported[ "nolock" ] <- true
-				printt( "BotAI:", bot.GetPlayerName(), "has had", weapon.GetWeaponClassName(), "ready on a target for",
-					BOT_TITAN_ORDNANCE_LOCK_REPORT, "s without a lock" )
+				if ( !weapon.SmartAmmo_IsEnabled() )
+					weapon.SmartAmmo_Enable()
+				local locks = 1.0
+				try { locks = max( SmartAmmo_GetTargetMaxLocks( weapon, target ), 1.0 ) }
+				catch ( e ) {}
+				weapon.SmartAmmo_SetTarget( target, locks )
+				locked = IsSmartAmmoLocked( weapon )
 			}
-			return 0
+			catch ( e ) {}
+			if ( !locked )
+			{
+				// The lock set from script didn't take either: say so once, try again after another lock time.
+				if ( !( "nolock" in file.ordnanceMissReported ) )
+				{
+					file.ordnanceMissReported[ "nolock" ] <- true
+					local line = "BotAI: " + bot.GetPlayerName() + " couldn't set a " + weapon.GetWeaponClassName() + " lock from script"
+					printt( line )
+					if ( "PilotBotsLog" in getroottable() )
+						PilotBotsLog( line )
+				}
+				brain.ordnanceLockWaitSince = 0.0
+				return 0
+			}
 		}
 		brain.ordnanceLockWaitSince = 0.0
 	}

@@ -5,7 +5,7 @@
 ; Faz backup dos arquivos originais (inclusive a tier0.dll) e restaura tudo ao desinstalar.
 
 #define AppName "Pilot Bots para R1Delta"
-#define AppVer "2.1.1"
+#define AppVer "2.1.2"
 
 [Setup]
 AppId={{6B0C0E55-4F55-4C57-9D55-7B1C5B07B075}
