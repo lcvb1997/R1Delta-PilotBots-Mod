@@ -41,6 +41,13 @@ and logs the reason to `r1delta\bin_delta\pilotbots.log`.
 
 ## Changelog
 
+### 2.1.1
+
+- Fixed the recurring "Internal Server script error" with Frontier Overhaul's Hologram: the decoy no longer
+  gets an anti-titan weapon handed to it when it spots a titan (also for holograms used by human players).
+- Bots no longer use the Hologram while holding an anti-titan weapon.
+- Bots no longer stand still waiting for a Deployable Cover dome that didn't come up (pressed while recharging).
+
 ### 2.1.0
 
 **Compatibility**
@@ -113,6 +120,10 @@ correções. Cada hook confere os bytes antes de ser instalado; problemas ficam 
 
 **Limitações:** só funciona ao hospedar pelo cliente (sem efeito no `R1Delta_DS.exe`). Alguns arquivos oficiais
 ainda são substituídos (feitos sobre o R1Delta 2.14.x); o resto entra por scripts autorun, sem alterar o jogo.
+
+**Novidades da 2.1.1:** corrigido o "Internal Server script error" recorrente com o holograma do Frontier Overhaul
+(também quando usado por jogadores); os bots não lançam holograma segurando arma antitanque e não ficam mais
+parados esperando um domo de cobertura que não subiu.
 
 **Novidades da 2.1.0:**
 - **Compatibilidade:** compatível com o Frontier Overhaul e outras mods de script. Os ganchos dos bots saíram dos

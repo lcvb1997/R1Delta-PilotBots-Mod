@@ -11683,14 +11683,20 @@ function WantsHologram( bot, brain, hasVisibleTarget, healthFrac )
 	// that are only presses during the cooldown).
 	if ( "hologram" in bot.s && IsValid( bot.s.hologram ) )
 		return false
-	// The decoy copies an anti-titan weapon in our hands, and Frontier Overhaul's soldier AI can't
-	// give an NPC the MGL or the Charge Rifle (a script error each time it tries).
+	// The decoy copies an anti-titan weapon in our hands (GetHologramATWeaponName), and Frontier
+	// Overhaul's soldier AI then fails to hand it over whenever the decoy spots a titan (a script
+	// error each time). With a rifle out, the decoy gets that instead.
 	local active = bot.GetActiveWeapon()
 	if ( IsValid( active ) )
 	{
-		local activeClass = active.GetWeaponClassName()
-		if ( activeClass == "mp_weapon_mgl" || activeClass == "mp_weapon_defender" )
-			return false
+		switch ( active.GetWeaponClassName() )
+		{
+			case "mp_weapon_rocket_launcher":
+			case "mp_weapon_smr":
+			case "mp_weapon_mgl":
+			case "mp_weapon_defender":
+				return false
+		}
 	}
 	if ( brain.evac != null )
 		return hasVisibleTarget || now < brain.underFireUntil

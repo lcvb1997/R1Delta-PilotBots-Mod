@@ -26,7 +26,7 @@
 #include <vector>
 #include "MinHook.h"
 
-#define PILOTBOTS_VERSION "2.1.0"
+#define PILOTBOTS_VERSION "2.1.1"
 
 //=============================================================================
 // Log: pilotbots.log next to this DLL (r1delta\bin_delta). The launcher starts the game with the

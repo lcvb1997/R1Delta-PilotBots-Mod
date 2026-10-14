@@ -101,6 +101,23 @@ if ( IsLobby() )
 	PilotBots_Log( "lobby: bot scripts not loaded" )
 	return
 }
+
+// Frontier Overhaul's Hologram decoy is an npc_soldier that copies its owner's anti-titan weapon and is set
+// up for rockets. When it spots a titan, EnemyChanged_Rocket (mp/_ai_soldiers.nut) tries to hand it that
+// weapon, which fails on the decoy: an "Internal Server script error" each time. Decoys are skipped (they
+// never shoot anyway). Only applies where that function exists, i.e. with Frontier Overhaul installed.
+if ( "EnemyChanged_Rocket" in getroottable() && !( "PilotBots_Orig_EnemyChanged_Rocket" in getroottable() ) )
+{
+	::PilotBots_Orig_EnemyChanged_Rocket <- EnemyChanged_Rocket
+	::EnemyChanged_Rocket <- function( soldier )
+	{
+		if ( IsValid( soldier ) && "isHologram" in soldier.s )
+			return
+		return PilotBots_Orig_EnemyChanged_Rocket( soldier )
+	}
+	PilotBots_Log( "Frontier Overhaul hologram rocket fix installed" )
+}
+
 try
 {
 	PilotBots_RemoveOlderBotScripts()
