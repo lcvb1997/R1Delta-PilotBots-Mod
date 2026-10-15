@@ -473,7 +473,43 @@ function BotRollLoadout( table, isTitan )
 	table.offhandWeapons[0].mods = []
 	table.offhandWeapons[1].weapon = PickRandomItemRef( isTitan ? itemType.TITAN_SPECIAL : itemType.PILOT_SPECIAL )
 	table.offhandWeapons[1].mods = []
-	table.playerSetFile = PickRandomItemRef( isTitan ? itemType.TITAN_SETFILE : itemType.PILOT_SETFILE )
+	local setFile = BotPickSetFile( isTitan )
+	if ( setFile != null )
+		table.playerSetFile = setFile
+}
+
+// A set file this map accepts, or null (the stock one is kept then). The item list has set files
+// the game rejects on some maps ("Given classname 'pilot_male_dm' is invalid" on Airbase,
+// pilot_male_cq on Box): the spawn errored out and the bot never came in. Pilots also keep to the
+// bodies with the dropship intro animations (pilot_female_dm gets the female_cq body, which has
+// none: the intro errored and the bot stayed on the ship).
+function BotPickSetFile( isTitan )
+{
+	local key = isTitan ? "titan" : "pilot"
+	if ( !( "botSetFiles" in file ) )
+		file.botSetFiles <- {}
+	if ( !( key in file.botSetFiles ) )
+	{
+		local pilotBodies = [ "pilot_male_br", "pilot_female_br", "pilot_male_cq" ]
+		local found = []
+		foreach ( item in GetAllItemsOfType( isTitan ? itemType.TITAN_SETFILE : itemType.PILOT_SETFILE ) )
+		{
+			if ( !isTitan && !ArrayContains( pilotBodies, item.ref ) )
+				continue
+			try
+			{
+				GetPlayerSettingsFieldForClassName( item.ref, "class" )
+				found.append( item.ref )
+			}
+			catch ( e )
+			{
+				printt( "BotManager: set file", item.ref, "not usable on this map" )
+			}
+		}
+		file.botSetFiles[ key ] <- found
+	}
+	local usable = file.botSetFiles[ key ]
+	return usable.len() > 0 ? PickRandom( usable ) : null
 }
 
 function PickRandomItemRef( type )

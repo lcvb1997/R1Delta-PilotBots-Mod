@@ -61,7 +61,7 @@ const BOT_SMART_LOCK_ANGLE		= 30.0		// smart pistol: pull the trigger on a lock 
 const BOT_SMART_EARLY_CHANCE	= 15		// smart pistol: percent of shots fired one lock short of full (the margin of error)
 const BOT_SMART_SETTLE_MIN		= 0.0		// smart pistol: extra wait after the lock is there before the press...
 const BOT_SMART_SETTLE_MAX		= 0.15		// ...up to this long
-const BOT_SMART_NO_LOCK_TIME	= 1.0		// smart pistol: on target this long with no lock building (out of range, titan): hip-fire unlocked
+const BOT_SMART_SIGHT_GAP		= 0.3		// smart pistol: the lock only builds on a target seen this recently (not through walls while suppressing)
 const BOT_SMART_REPRESS			= 0.25		// smart pistol: gap after a press so the burst plays out and the locks reset
 const BOT_TITAN_FLEE_MIN		= 1.2		// with an anti-titan weapon, a titan too close is only run from this long...
 const BOT_TITAN_FLEE_MAX		= 2.2		// ...before turning to shoot it again
@@ -808,6 +808,7 @@ const BOT_MELEE_BLOCK_MAX		= 8.0
 const BOT_MELEE_TITAN_CLEARANCE	= 220.0	// on foot: no kick with an enemy titan this close (the kick cone would land on it)
 const BOT_RUSH_TITAN_CLEARANCE	= 400.0	// ...and no rushing in at a pilot when we or it are this close to one
 const BOT_TITAN_DASH_COOLDOWN_MIN	= 1.6
+const BOT_TITAN_RIDER_DASH_BLOCK	= 1.5		// no titan dash this long after an enemy rider got off (the hull throws a pilot still against it)
 const BOT_TITAN_DASH_COOLDOWN_MAX	= 3.2
 const BOT_TITAN_DASH_TRAVEL_CHANCE	= 35	// % per try: dash on the way somewhere (no fight), road clear ahead
 const BOT_TITAN_DASH_TRAVEL_RETRY	= 1.5	// a failed travel roll waits this long before the next one
@@ -861,6 +862,13 @@ const BOT_MELEE_MAX_HEIGHT_DIFF	= 120.0	// never charge in for melee at somethin
 const BOT_SIGHT_HEAD_TRACES		= 2			// per think, head checks on enemies whose center is hidden (the current target doesn't count)
 const BOT_SIGHT_HEAD_SCALE		= 1.75		// non-players: the head point is this far up the origin-to-center line
 const BOT_SIGHT_TRACE_SLACK		= 12.0		// a sight trace stopped at most this short of the point still counts as clear (see IsSightTraceClear)
+// Cloaked enemies (see CanSpotCloaked): only made out up close, like a player would.
+const BOT_CLOAK_SPOT_DIST		= 500.0		// on foot, a cloaked enemy is seen within this...
+const BOT_CLOAK_SPOT_DIST_TITAN	= 350.0		// ...from a titan cockpit, within this
+const BOT_CLOAK_MOVING_SPEED	= 250.0		// moving faster than this (sprint, wallrun) the shimmer shows more...
+const BOT_CLOAK_MOVING_SCALE	= 1.6		// ...and it's seen this much farther
+const BOT_CLOAK_ATTACKER_SCALE	= 2.5		// one that just shot us (BOT_CLOAK_ATTACKER_TIME) gives itself away this much farther
+const BOT_CLOAK_ATTACKER_TIME	= 1.0
 const BOT_ELEVATED_TARGET_HEIGHT	= 120.0	// on foot, a target this far above us is "up there"...
 const BOT_ELEVATED_STANDOFF_SCALE	= 1.2	// ...and is fought from at least this times its height away (flat), for an angle past the roof edge...
 const BOT_ELEVATED_STANDOFF_MAX	= 900.0		// ...up to this far
@@ -1601,11 +1609,13 @@ function BotThink( bot )
 		titanDetourUntil = 0.0	// ...until then
 		atWantUntil = 0.0		// keep the anti-titan weapon out until then (see WantsAntiTitanWeapon)
 		atAimingTime = -999.0	// last time the anti-titan weapon was locking / charging on a target
+		riderSeenTime = -100.0	// titan: last think an enemy was riding us (see UpdateTitanDash)
 		chargeStart = 0.0		// charge rifle: when the current charge started...
 		chargeClip = -1			// ...and the clip then (a drop = the shot went off)
 		smartLocksWanted = -1	// smart pistol: locks to wait for before the next press (-1 = roll again)
 		smartLockedTime = -1.0	// smart pistol: when that many locks were first there
-		smartNoLockSince = -1.0	// smart pistol: on target with no lock building since then
+		smartLockStart = -1.0	// smart pistol: the script lock has been building since then (-1 = not locking)...
+		smartLockTarget = null	// ...on this target
 		archerLockTarget = null	// Archer: the titan the sights have been on...
 		archerLockStart = -1.0	// ...since then (-1 = not locking)
 		archerFireClip = -1		// Archer: the clip at the last locked press...
@@ -2591,6 +2601,9 @@ function UpdateTarget( bot, brain )
 		// titan in circles. UpdateRodeoDefense deals with it (smoke, or hop out and shoot it).
 		if ( inTitan && enemy.IsPlayer() && enemy.GetTitanSoulBeingRodeoed() == bot.GetTitanSoul() )
 			continue
+		// Cloaked: not seen past a short range (bots, titans above all, saw cloaked pilots across the map).
+		if ( !CanSpotCloaked( bot, brain, enemy, dist, inTitan ) )
+			continue
 		local score = dist
 		if ( inTitan )
 		{
@@ -2902,6 +2915,20 @@ function GetEnemyNPCs( enemyTeam, origin, radius )
 	return npcs
 }
 
+// False for a cloaked enemy the bot can't make out: past BOT_CLOAK_SPOT_DIST (less from a titan),
+// farther when it's moving fast or has just shot us. Uncloaked enemies are always true.
+function CanSpotCloaked( bot, brain, enemy, dist, inTitan )
+{
+	if ( IsTitanEntity( enemy ) || !IsCloaked( enemy ) )
+		return true
+	local spot = inTitan ? BOT_CLOAK_SPOT_DIST_TITAN : BOT_CLOAK_SPOT_DIST
+	if ( enemy.GetVelocity().Length() > BOT_CLOAK_MOVING_SPEED )
+		spot *= BOT_CLOAK_MOVING_SCALE
+	if ( enemy == brain.lastAttacker && Time() - brain.lastAttackerTime < BOT_CLOAK_ATTACKER_TIME )
+		spot *= BOT_CLOAK_ATTACKER_SCALE
+	return dist < spot
+}
+
 function CanSee( bot, eye, enemy )
 {
 	local center = enemy.GetWorldSpaceCenter()
@@ -3130,7 +3157,7 @@ function GetTitanHoldMove( bot, brain )
 
 // An enemy pilot is riding our titan: electric smoke if we have it charged, otherwise (or once the
 // smoke is over and the rider is still on) hop out and shoot the rider off (see UpdatePetRiderTarget).
-// Dashing is only the fallback while disembarking isn't possible: it never shakes a rider off.
+// No dashing with a rider on: it never shakes one off (see UpdateTitanDash).
 function UpdateRodeoDefense( bot, brain )
 {
 	local soul = bot.GetTitanSoul()
@@ -3176,11 +3203,8 @@ function UpdateRodeoDefense( bot, brain )
 		bot.CockpitStartDisembark()
 		thread PlayerDisembarksTitan( bot )
 	}
-	else if ( now > brain.nextDashTime )
-	{
-		BotPressButtons( bot, BOT_IN_DODGE )
-		brain.nextDashTime = now + RandomFloat( BOT_TITAN_DASH_COOLDOWN_MIN, BOT_TITAN_DASH_COOLDOWN_MAX ) * brain.lethality.titan.dashCooldownScale
-	}
+	// (No dash while it can't hop out: a dash never shakes a rider off, and a rider jumping off
+	// mid-dash gets hit by the moving hull.)
 }
 
 //---------------------------------------------------------
@@ -3359,7 +3383,7 @@ function BotRodeoRideTick( bot, brain, soul )
 		// A few asks didn't do it: try the other gun every other time.
 		if ( brain.rideSwitchTries >= BOT_RODEO_SWITCH_ALT_TRIES && brain.rideSwitchTries % 2 == 1 )
 		{
-			local primary = GetPilotAntiPersonnelWeapon( bot )
+			local primary = GetBotPilotPrimaryWeapon( bot )
 			local other = weapon == primary ? GetPilotSideArmWeapon( bot ) : primary
 			if ( other != null )
 				weapon = other
@@ -3446,7 +3470,7 @@ function BotFriendlyRideTick( bot, brain, titan )
 // has ammo, else the sidearm (same order as the game's unused ForceWeaponSwitchForRodeo).
 function GetBotRodeoWeapon( bot )
 {
-	local primary = GetPilotAntiPersonnelWeapon( bot )
+	local primary = GetBotPilotPrimaryWeapon( bot )
 	local sidearm = GetPilotSideArmWeapon( bot )
 	foreach ( weapon in [ primary, sidearm ] )
 	{
@@ -4292,7 +4316,8 @@ function FindThreatPosition( bot, brain, isTitan, hasVisibleTarget, enemyTeam )
 	local enemyCenter = Vector( 0, 0, 0 )
 	foreach ( enemy in GetPlayerArrayOfTeam( enemyTeam ) )
 	{
-		if ( !IsAlive( enemy ) || Distance( origin, enemy.GetOrigin() ) > BOT_OUTNUMBER_DIST || !CanSee( bot, eye, enemy ) )
+		local dist = IsAlive( enemy ) ? Distance( origin, enemy.GetOrigin() ) : 0.0
+		if ( !IsAlive( enemy ) || dist > BOT_OUTNUMBER_DIST || !CanSpotCloaked( bot, brain, enemy, dist, isTitan ) || !CanSee( bot, eye, enemy ) )
 			continue
 		enemyCount++
 		enemyCenter = enemyCenter + enemy.GetOrigin()
@@ -6401,7 +6426,10 @@ function UpdateReposition( bot, brain, hasVisibleTarget )
 	local enemies = 0
 	foreach ( enemy in GetPlayerArrayOfTeam( GetOtherTeam( bot.GetTeam() ) ) )
 	{
-		if ( IsAlive( enemy ) && !enemy.IsTitan() && Distance( origin, enemy.GetOrigin() ) < BOT_BRAWL_RADIUS && CanSee( bot, eye, enemy ) )
+		if ( !IsAlive( enemy ) || enemy.IsTitan() )
+			continue
+		local dist = Distance( origin, enemy.GetOrigin() )
+		if ( dist < BOT_BRAWL_RADIUS && CanSpotCloaked( bot, brain, enemy, dist, bot.IsTitan() ) && CanSee( bot, eye, enemy ) )
 			enemies++
 	}
 	local allies = 0
@@ -10730,7 +10758,7 @@ function UpdateFiring( bot, brain, canShoot )
 		brain.atAimingTime = now
 
 	if ( fireMode == "smart" )
-		return UpdateSmartPistolFiring( brain, weapon, angleOff, onTarget, now )
+		return UpdateSmartPistolFiring( bot, brain, weapon, angleOff, onTarget, now )
 
 	if ( fireMode == "spin" )
 		return UpdateMinigunFiring( brain, weapon, angleOff, maxAngle, now )
@@ -10833,10 +10861,13 @@ function UpdateMinigunFiring( brain, weapon, angleOff, maxAngle, now )
 }
 
 // Smart pistol: keep the target in the search cone until the locks are on, then tap once (the
-// press fires one guided bullet per lock and clears them). Now and then a shot goes one lock
-// short, the margin of error. A target it can't lock (out of range, a titan) gets hip-fired
-// unlocked after a while on target.
-function UpdateSmartPistolFiring( brain, weapon, angleOff, onTarget, now )
+// press fires one guided bullet per lock and clears them). The game's lock-on doesn't build for
+// bots (it parks the target at 0.0001, same as the Archer, see UpdateArcherFiring), so the locks
+// are built here at the weapon's own targeting time (quicker up close) and set with
+// SmartAmmo_SetTarget; the victim sees them build on the HUD as from a human. Now and then a shot
+// goes one lock short, the margin of error. A target it can't lock (a titan, past the search
+// distance) gets plain semi-auto fire while on target.
+function UpdateSmartPistolFiring( bot, brain, weapon, angleOff, onTarget, now )
 {
 	if ( brain.firing )
 	{
@@ -10844,52 +10875,103 @@ function UpdateSmartPistolFiring( brain, weapon, angleOff, onTarget, now )
 		brain.nextFireToggle = now + BOT_SMART_REPRESS
 		brain.smartLocksWanted = -1
 		brain.smartLockedTime = -1.0
-		brain.smartNoLockSince = -1.0
+		brain.smartLockStart = -1.0
 		return 0
 	}
 
-	if ( now < brain.nextFireToggle || angleOff > BOT_SMART_LOCK_ANGLE )
+	local target = brain.target
+	local settings = GetSmartPistolSettings( weapon )
+	local dist = Distance( bot.EyePosition(), target.GetWorldSpaceCenter() )
+	if ( IsTitanEntity( target ) || dist > settings.searchDist )
 	{
+		brain.smartLockStart = -1.0
 		brain.smartLockedTime = -1.0
-		brain.smartNoLockSince = -1.0
+		if ( !onTarget || now < brain.nextFireToggle )
+			return 0
+		brain.triggerPulse = !brain.triggerPulse
+		return brain.triggerPulse ? BOT_IN_ATTACK : 0
+	}
+
+	if ( now < brain.nextFireToggle || angleOff > BOT_SMART_LOCK_ANGLE || now - brain.targetLastSeenTime > BOT_SMART_SIGHT_GAP )
+	{
+		brain.smartLockStart = -1.0
+		brain.smartLockedTime = -1.0
 		return 0
 	}
 
-	local maxLocks = GetSmartAmmoMaxLocks( weapon, brain.target )
+	// A new target starts over: its own lock count (a soldier's 1 kept for a pilot fired one lock short of 3).
+	if ( brain.smartLockStart < 0 || brain.smartLockTarget != target )
+	{
+		if ( brain.smartLockTarget != target )
+			brain.smartLocksWanted = -1
+		brain.smartLockStart = now
+		brain.smartLockTarget = target
+	}
+
+	local maxLocks = GetSmartAmmoMaxLocks( weapon, target )
 	if ( brain.smartLocksWanted < 0 )
 	{
 		brain.smartLocksWanted = maxLocks
 		if ( maxLocks > 1 && RandomInt( 100 ) < BOT_SMART_EARLY_CHANCE )
 			brain.smartLocksWanted = maxLocks - 1
 	}
-
-	local fraction = GetSmartAmmoTargetFraction( weapon, brain.target )
-	local press = false
-	if ( floor( fraction + 0.001 ) >= min( brain.smartLocksWanted, maxLocks ) )
+	local edge = BotClamp( dist / max( settings.searchDist, 1.0 ), 0.0, 1.0 )
+	local perLock = target.IsPlayer() ? settings.timeMin + ( settings.timeMax - settings.timeMin ) * edge
+		: settings.npcMin + ( settings.npcMax - settings.npcMin ) * edge
+	local fraction = min( ( now - brain.smartLockStart ) / max( perLock, 0.05 ), maxLocks.tofloat() )
+	fraction = max( fraction, GetSmartAmmoTargetFraction( weapon, target ) )	// (in case the game's own lock does build)
+	if ( fraction > 0.01 )
 	{
-		if ( brain.smartLockedTime < 0 )
-			brain.smartLockedTime = now + RandomFloat( BOT_SMART_SETTLE_MIN, BOT_SMART_SETTLE_MAX )
-		press = now >= brain.smartLockedTime
+		try
+		{
+			if ( !weapon.SmartAmmo_IsEnabled() )
+				weapon.SmartAmmo_Enable()
+			weapon.SmartAmmo_SetTarget( target, fraction )
+		}
+		catch ( e ) {}
 	}
-	else
+
+	if ( floor( fraction + 0.001 ) < min( brain.smartLocksWanted, maxLocks ) )
 	{
 		brain.smartLockedTime = -1.0
-		if ( fraction > 0.01 || !onTarget )
-		{
-			brain.smartNoLockSince = -1.0
-		}
-		else
-		{
-			if ( brain.smartNoLockSince < 0 )
-				brain.smartNoLockSince = now
-			press = now - brain.smartNoLockSince >= BOT_SMART_NO_LOCK_TIME
-		}
-	}
-
-	if ( !press )
 		return 0
+	}
+	if ( brain.smartLockedTime < 0 )
+		brain.smartLockedTime = now + RandomFloat( BOT_SMART_SETTLE_MIN, BOT_SMART_SETTLE_MAX )
+	if ( now < brain.smartLockedTime )
+		return 0
+	// Once per bot: enough in pilotbots.log to tell whether the script locks do their job.
+	if ( !( "smartLogged" in brain ) )
+	{
+		brain.smartLogged <- true
+		local line = "BotAI: " + bot.GetPlayerName() + " smart pistol: locked press, " + floor( fraction + 0.001 ) + " of " + maxLocks
+			+ " locks on " + ( target.IsPlayer() ? "a pilot" : target.GetClassname() ) + format( " at %.0f u", dist )
+			+ format( ", %.2f s per lock, game fraction %.4f", perLock, GetSmartAmmoTargetFraction( weapon, target ) )
+		printt( line )
+		if ( "PilotBotsLog" in getroottable() )
+			PilotBotsLog( line )
+	}
 	brain.firing = true
 	return BOT_IN_ATTACK
+}
+
+// Smart pistol lock settings, mods included (silencer: slower; enhanced targeting: quicker and farther).
+function GetSmartPistolSettings( weapon )
+{
+	local settings = { searchDist = 1050.0, timeMin = 0.37, timeMax = 0.65, npcMin = 0.1, npcMax = 0.2 }
+	local fields = { searchDist = "smart_ammo_search_distance", timeMin = "smart_ammo_targeting_time_min",
+		timeMax = "smart_ammo_targeting_time_max", npcMin = "smart_ammo_targeting_time_min_npc", npcMax = "smart_ammo_targeting_time_max_npc" }
+	foreach ( key, field in fields )
+	{
+		try
+		{
+			local value = weapon.GetWeaponModSetting( field )
+			if ( value != null )
+				settings[ key ] = value.tofloat()
+		}
+		catch ( e ) {}
+	}
+	return settings
 }
 
 // Archer (lock-on): UpdateAds keeps the sights up; the trigger is tapped only once locked on, as
@@ -11588,7 +11670,7 @@ function UpdateWeaponChoice( bot, brain, isTitan )
 
 	local weapon = WantsAntiTitanWeapon( bot, brain ) ? GetBotUsableAntiTitanWeapon( bot ) : null
 	if ( weapon == null )
-		weapon = GetPilotAntiPersonnelWeapon( bot )
+		weapon = GetBotPilotPrimaryWeapon( bot )
 	if ( weapon == null )
 		weapon = GetPilotSideArmWeapon( bot )
 	if ( weapon == null || ( IsValid( active ) && active == weapon ) )
@@ -11601,9 +11683,32 @@ function UpdateWeaponChoice( bot, brain, isTitan )
 	brain.nextWeaponSwitchTime = Time() + BOT_WEAPON_HOLD_TIME
 }
 
+// The Charge Rifle counts too: R1Delta's own mp_weapon_defender.txt has no "is_anti_titan" key
+// (Frontier Overhaul's copy does), so without the class check bots never took it out against titans.
 function IsAntiTitanWeapon( weapon )
 {
-	return weapon.GetWeaponInfoFileKeyField( "is_anti_titan" ) == 1
+	return weapon.GetWeaponInfoFileKeyField( "is_anti_titan" ) == 1 || weapon.GetWeaponClassName() == "mp_weapon_defender"
+}
+
+// GetPilotAntiTitanWeapon / GetPilotAntiPersonnelWeapon (_utility.nut), with IsAntiTitanWeapon.
+function GetBotPilotAntiTitanWeapon( bot )
+{
+	foreach ( weapon in bot.GetMainWeapons() )
+	{
+		if ( IsAntiTitanWeapon( weapon ) )
+			return weapon
+	}
+	return null
+}
+
+function GetBotPilotPrimaryWeapon( bot )
+{
+	foreach ( weapon in bot.GetMainWeapons() )
+	{
+		if ( weapon.GetWeaponInfoFileKeyField( "is_sidearm" ) != 1 && !IsAntiTitanWeapon( weapon ) )
+			return weapon
+	}
+	return null
 }
 
 // Anti-titan weapon out? Kept out for a while once a titan was around (each switch costs a slow
@@ -11650,7 +11755,7 @@ function WantsAntiTitanWeapon( bot, brain )
 // button was never found; the bot then treats titans as if it had no anti-titan weapon.
 function GetBotAntiTitanWeapon( bot )
 {
-	local weapon = GetPilotAntiTitanWeapon( bot )
+	local weapon = GetBotPilotAntiTitanWeapon( bot )
 	if ( weapon != null && weapon.GetWeaponClassName() == "mp_weapon_rocket_launcher" && ( file.adsBit == 0 || file.archerBroken ) )
 		return null
 	return weapon
@@ -12412,6 +12517,17 @@ function UpdateTitanDash( bot, brain, hasVisibleTarget, inEngageRange, forward, 
 	// A dash would carry us out of our own electric smoke with a rider still on.
 	if ( IsHoldingInSmoke( bot, brain ) )
 		return 0
+	// No dashing with an enemy rider on: one jumping off mid-dash gets thrown by the hull.
+	local riderSoul = bot.GetTitanSoul()
+	local rider = IsValid( riderSoul ) ? riderSoul.GetRiderEnt() : null
+	if ( IsValid( rider ) && rider.GetTeam() != bot.GetTeam() )
+	{
+		brain.riderSeenTime = now
+		return 0
+	}
+	// Nor right after it got off: the pilot is still against the hull, and a dash throws it sky-high.
+	if ( now - brain.riderSeenTime < BOT_TITAN_RIDER_DASH_BLOCK )
+		return 0
 
 	// Just got stuck (see TitanStuckResponse): dash out the way we're stepping, cooldown or not
 	// (the dash meter is the real limit).
@@ -12471,7 +12587,7 @@ function UpdateTitanDash( bot, brain, hasVisibleTarget, inEngageRange, forward, 
 
 // Enemy pilot closing in on us (or right next to us), not yet on board: the one to deal with
 // first. Nearest such pilot, or null.
-function FindRodeoThreat( bot )
+function FindRodeoThreat( bot, brain )
 {
 	local origin = bot.GetOrigin()
 	local eye = bot.EyePosition()
@@ -12481,9 +12597,14 @@ function FindRodeoThreat( bot )
 	{
 		if ( !IsAlive( enemy ) || enemy.IsTitan() || IsValid( enemy.GetTitanSoulBeingRodeoed() ) )
 			continue
+		// Just jumped off a titan (or out of one): the game won't let them rodeo again yet
+		// (rodeoDisabledTime), so no swat or dash-away at them. Dashing into a pilot still against
+		// the hull, or punching one in mid-air, is what threw riders sky-high.
+		if ( enemy.rodeoDisabledTime > Time() )
+			continue
 		local toUs = origin - enemy.GetOrigin()
 		local dist = Distance( origin, enemy.GetOrigin() )
-		if ( dist > BOT_SWAT_DIST || !CanSee( bot, eye, enemy ) )
+		if ( dist > BOT_SWAT_DIST || !CanSpotCloaked( bot, brain, enemy, dist, true ) || !CanSee( bot, eye, enemy ) )
 			continue
 		local closing = enemy.GetVelocity().Dot( toUs * ( 1.0 / max( dist, 1.0 ) ) )
 		if ( dist > BOT_SWAT_CLOSE_DIST && closing < BOT_SWAT_APPROACH_SPEED )
@@ -12501,7 +12622,7 @@ function FindRodeoThreat( bot )
 // on it (faster, see AimTowards), the combat code charges it and UpdateMelee punches it.
 function UpdateRodeoIntercept( bot, brain )
 {
-	local threat = FindRodeoThreat( bot )
+	local threat = FindRodeoThreat( bot, brain )
 	if ( threat == null )
 		return
 

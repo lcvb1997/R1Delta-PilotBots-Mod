@@ -551,6 +551,148 @@ else
 }
 
 //---------------------------------------------------------
+// Death pits
+//---------------------------------------------------------
+// The pits' trigger_hurt never touches a bot (see Capture Point above), and its damage per hit
+// barely scratches a titan, so bots and titans that fell in (Outpost 207's shaft) lived on down
+// there. Titans touching a lethal trigger, and bots inside one's box for a moment while below the
+// lowest node of the AI graph, die the way a pilot would. (The box alone isn't enough: on Outpost
+// 207 it takes in the ground around the shaft, and bots died all over the map. The graph has no
+// nodes down a pit, the same rule IsVoidAt in _pilotbots_ai.nut goes by.) (War Games has the same for titans in mp_wargames.nut; the dead are skipped, so
+// nothing is killed twice.)
+::PilotBots_PitLethalDamage <- 100		// a trigger_hurt doing at least this per hit (or a fall / splat one) is a death pit
+::PilotBots_PitCheckInterval <- 0.25
+::PilotBots_PitBotDelay <- 0.5			// a bot is killed after this long in the box (not for cutting through a corner of it)...
+::PilotBots_PitBelowGraph <- 128.0		// ...and only this far below the lowest graph node (BOT_VOID_MARGIN)
+
+::PilotBots_PitDamageSource <- function( source )
+{
+	switch ( source )
+	{
+		case "splat":
+			return eDamageSourceId.splat
+		case "burn":
+			return eDamageSourceId.burn
+		case "submerged":
+			return eDamageSourceId.submerged
+	}
+	return eDamageSourceId.fall
+}
+
+::PilotBots_PitThink <- function()
+{
+	wait 1.0	// every entity of the map has spawned
+
+	local pits = []
+	foreach ( trigger in GetEntArrayByClass_Expensive( "trigger_hurt" ) )
+	{
+		local damage = 0.0
+		local source = ""
+		try
+		{
+			if ( trigger.HasKey( "damage" ) )
+				damage = trigger.GetValueForKey( "damage" ).tofloat()
+			if ( trigger.HasKey( "damageSourceName" ) )
+				source = trigger.GetValueForKey( "damageSourceName" )
+		}
+		catch ( e ) {}
+		if ( damage >= PilotBots_PitLethalDamage || source == "fall" || source == "splat" )
+		{
+			pits.append( { trigger = trigger, damageSourceId = PilotBots_PitDamageSource( source ) } )
+			local org = trigger.GetOrigin()
+			local mins = org + trigger.GetBoundingMins()
+			local maxs = org + trigger.GetBoundingMaxs()
+			PilotBots_Log( "death pit: trigger_hurt damage " + damage + " source " + source
+				+ format( ", box %.0f %.0f %.0f to %.0f %.0f %.0f", mins.x, mins.y, mins.z, maxs.x, maxs.y, maxs.z ) )
+		}
+	}
+	if ( pits.len() == 0 )
+		return
+
+	// Lowest node of the AI graph; no graph, no bot check (titans still are).
+	local floorZ = null
+	if ( "NavGetNodeCount" in getroottable() )
+	{
+		local count = NavGetNodeCount()
+		for ( local i = 0; i < count; i++ )
+		{
+			local z = NavGetNodePosition( i )[2]
+			if ( floorZ == null || z < floorZ )
+				floorZ = z
+		}
+	}
+	local botMaxZ = floorZ != null ? floorZ - PilotBots_PitBelowGraph : null
+	PilotBots_Log( "death pit: bots die below z " + ( botMaxZ != null ? format( "%.0f", botMaxZ ) : "(no graph, bots not checked)" ) )
+
+	local botInsideSince = {}
+	for ( ;; )
+	{
+		wait PilotBots_PitCheckInterval
+
+		local victims = []
+		foreach ( team in [ TEAM_IMC, TEAM_MILITIA ] )
+			victims.extend( GetNPCArrayEx( "npc_titan", team, Vector( 0, 0, 0 ), -1 ) )
+		foreach ( player in GetPlayerArray() )
+		{
+			if ( player.IsBot() || player.IsTitan() )
+				victims.append( player )
+		}
+
+		local now = Time()
+		foreach ( ent in victims )
+		{
+			local hit = null
+			local isBot = ent.IsPlayer() && ent.IsBot()
+			if ( isBot && ( botMaxZ == null || ent.GetOrigin().z > botMaxZ ) )
+			{
+				if ( ent in botInsideSince )
+					delete botInsideSince[ ent ]
+				continue
+			}
+			if ( IsAlive( ent ) )
+			{
+				foreach ( pit in pits )
+				{
+					if ( !IsValid( pit.trigger ) )
+						continue
+					if ( isBot ? PilotBots_IsInsideHardpointTrigger( pit.trigger, ent ) : pit.trigger.IsTouching( ent ) )
+					{
+						hit = pit
+						break
+					}
+				}
+			}
+			if ( hit == null )
+			{
+				if ( ent in botInsideSince )
+					delete botInsideSince[ ent ]
+				continue
+			}
+			if ( isBot )
+			{
+				if ( !( ent in botInsideSince ) )
+					botInsideSince[ ent ] <- now
+				if ( now - botInsideSince[ ent ] < PilotBots_PitBotDelay )
+					continue
+				delete botInsideSince[ ent ]
+			}
+			local org = ent.GetOrigin()
+			PilotBots_Log( "death pit: " + ( ent.IsPlayer() ? ent.GetPlayerName() : ent.GetClassname() )
+				+ ( ent.IsTitan() ? " (titan)" : "" ) + " fell in at " + format( "%.0f %.0f %.0f", org.x, org.y, org.z ) )
+			ent.TakeDamage( ent.GetMaxHealth() + 10000, hit.trigger, hit.trigger, { forceKill = true, damageSourceId = hit.damageSourceId } )
+		}
+
+		foreach ( ent in TableKeysToArray( botInsideSince ) )
+		{
+			if ( !IsValid( ent ) )
+				delete botInsideSince[ ent ]
+		}
+	}
+}
+thread PilotBots_PitThink()
+PilotBots_Log( "death pit watch installed" )
+
+//---------------------------------------------------------
 // Campaign intro deaths
 //---------------------------------------------------------
 // Bots died in Demeter's intro drop pods; the cause is logged so it can be found.

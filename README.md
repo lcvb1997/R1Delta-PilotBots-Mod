@@ -49,9 +49,24 @@ and logs the reason to `r1delta\bin_delta\pilotbots.log`.
   bot has held its sights on the titan for a moment. If the Archer keeps failing to fire, bots stop using it
   for the rest of the map.
 - Titan bots now use Slaved Warheads. Before, they waited for a lock that never came and never fired them.
+- Cloak now works against bots: they only spot a cloaked pilot up close (closer still from a titan), a bit farther
+  when it's sprinting or wallrunning or has just shot them. Before, bots, and titans above all, saw cloaked
+  pilots at any range.
+- Fixed bots that never spawned on some maps (Airbase): they could get a pilot class the map doesn't accept
+  (`pilot_male_dm`), or a body without the dropship intro animations, and the spawn errored out.
 - Bot loadouts now change from match to match. The game's random roll was never seeded, so every match
   gave the bots the same weapons.
 - Frontier Overhaul: fixed the script error when executing a piloted titan outside Attrition.
+- Fixed players being thrown high into the air when jumping off a bot's titan after a rodeo: the titan dashed
+  while the pilot was still against its hull. Bot titans no longer dash while an enemy rides them or for a moment
+  after it lets go, and no longer swat at a pilot that just jumped off.
+- Bots now use the Smart Pistol MK5 properly: the game's lock-on never builds for bots, so the locks are built from
+  script at the weapon's own targeting time (3 on pilots, 2 on spectres, 1 on grunts) and the bot fires once
+  locked. The victim sees the locks build like from a player.
+- Bots now use the Charge Rifle against titans. R1Delta's weapon file doesn't mark it as anti-titan, so bots
+  never took it out.
+- Bots and titans now die in death pits (e.g. the shaft on Outpost 207): the map's death triggers never touch
+  bots, and their damage barely scratches a titan.
 - Bot names: the meme names are gone, replaced by Titanfall-style names (Elena Castro, Pilot Hudson, Marauder 2-1,
   Santiago [MCOR]...), with more surnames such as Castro, Hudson, Marques, Santiago and Alphonse.
 
@@ -142,9 +157,24 @@ ainda são substituídos (feitos sobre o R1Delta 2.14.x); o resto entra por scri
   que o bot mantém a mira no titã por um instante. Se o Archer continuar sem disparar, os bots deixam de usá-lo
   até o fim do mapa.
 - Os titãs bots agora usam as Slaved Warheads. Antes, eles esperavam um lock que nunca vinha e nunca disparavam.
+- O cloak agora funciona contra os bots: eles só enxergam um piloto camuflado de perto (mais perto ainda de dentro
+  de um titã), um pouco mais longe se ele estiver correndo, fazendo wallrun ou se acabou de atirar neles. Antes,
+  os bots, e principalmente os titãs, viam pilotos camuflados a qualquer distância.
+- Corrigidos bots que nunca nasciam em alguns mapas (Airbase): eles podiam receber uma classe de piloto que o mapa
+  não aceita (`pilot_male_dm`), ou um corpo sem as animações de saída do dropship, e o spawn dava erro.
 - Os loadouts dos bots agora mudam a cada partida. O sorteio do jogo nunca era inicializado, então os bots
   recebiam as mesmas armas em todas as partidas.
 - Frontier Overhaul: corrigido o erro de script ao executar um titã pilotado fora do modo Attrition.
+- Corrigido o jogador sendo arremessado para o alto ao saltar do titã de um bot depois de um rodeo: o titã dava
+  dash enquanto o piloto ainda estava encostado no casco. Os titãs bots não dão mais dash enquanto um inimigo está
+  montado neles nem logo depois que ele solta, e não tentam mais acertar um piloto que acabou de saltar.
+- Os bots agora usam a Smart Pistol MK5 direito: o lock do jogo nunca se forma para bots, então os locks são feitos
+  por script no tempo da própria arma (3 em pilotos, 2 em spectres, 1 em soldados) e o bot dispara com o lock
+  completo. A vítima vê os locks se formando como contra um jogador.
+- Os bots agora usam o Charge Rifle contra titãs. O arquivo da arma no R1Delta não a marca como antititã, então
+  os bots nunca a sacavam.
+- Bots e titãs agora morrem nos fossos letais (por exemplo, o poço do Outpost 207): os triggers de morte do mapa
+  nunca tocam bots, e o dano deles mal arranha um titã.
 - Nomes dos bots: os nomes de meme saíram e deram lugar a nomes no estilo Titanfall (Elena Castro, Pilot Hudson,
   Marauder 2-1, Santiago [MCOR]...), com mais sobrenomes, como Castro, Hudson, Marques, Santiago e Alphonse.
 
